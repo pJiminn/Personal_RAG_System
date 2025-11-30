@@ -1,0 +1,107 @@
+.container {
+  max-width: 1200px;
+  margin: auto;
+  padding: 2rem;
+  font-family: Arial, sans-serif;
+}
+
+.title {
+  text-align: center;
+  margin-bottom: 2rem;
+  font-size: 50px;
+}
+
+.row {
+  display: flex;
+  gap: 2rem;
+  margin-bottom: 2rem;
+}
+
+.card {
+  flex: 1;
+  background: #fff;
+  padding: 1.5rem;
+  border-radius: 12px;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+}
+
+.inputRow {
+  display: flex;
+  gap: 1rem;
+}
+
+.btn {
+  padding: 0.7rem 1.2rem;
+  background: #4a5cff;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: #293aff;
+}
+
+.input {
+  flex: 1;
+  padding: 0.7rem;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+}
+
+.searchResults {
+  margin-top: 1rem;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.resultCard {
+  background: #f4f4f4;
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+}
+
+.score {
+  color: #777;
+  font-size: 0.85rem;
+}
+
+.chatBox {
+  background: white;
+  padding: 1.5rem;
+  border-radius: 12px;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+}
+
+.chatWindow {
+  height: 350px;
+  padding: 1rem;
+  overflow-y: auto;
+  border-radius: 8px;
+  background: #fafafa;
+  margin-bottom: 1rem;
+  border: 1px solid #ddd;
+}
+
+.userBubble {
+  padding: 0.8rem 1rem;
+  background: #d7e3ff;
+  margin-bottom: 10px;
+  border-radius: 12px;
+  max-width: 70%;
+  margin-left: auto;
+}
+
+.botBubble {
+  padding: 0.8rem 1rem;
+  background: #e8ffe8;
+  margin-bottom: 10px;
+  border-radius: 12px;
+  max-width: 70%;
+}
+.chatInputRow {
+  display: flex;
+  gap: 1rem;
+}
