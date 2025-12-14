@@ -13,6 +13,8 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+
+
 export const metadata: Metadata = {
   title: "RAG Chatbot",
   description: "RAG chatbot with sidebar & streaming",

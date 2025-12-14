@@ -1,75 +1,251 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import CreateChatModal from "./components/CreateChatModal"; // 🔥 모달 import
 
-export default function Sidebar({ onSelect }) {
-  const [docs, setDocs] = useState([]);
+export default function Sidebar({
+  projectId,
+  setProjectId,
+  chatId,
+  setChatId,
+  setChatHistory,
+  projectRefreshKey,
+}: any) {
+  const backend = "http://localhost:8000";
+  
+  const router = useRouter();
 
-  async function loadDocs() {
-    const res = await fetch("http://localhost:8000/documents");
-    const data = await res.json();
-    setDocs(data.documents || []);
-  }
+  const [projects, setProjects] = useState<any[]>([]);
+  const [chats, setChats] = useState<any[]>([]);
+  const [projectFiles, setProjectFiles] = useState<any[]>([]);
 
-  async function deleteDoc(id: number) {
-    await fetch(`http://localhost:8000/documents/${id}`, {
-      method: "DELETE",
-    });
-    loadDocs();
-  }
+  const [showModal, setShowModal] = useState(false);
+  const [loraList, setLoraList] = useState<any[]>([]);
 
+  // -----------------------------
+  // 프로젝트 목록 로드
+  // -----------------------------
   useEffect(() => {
-    loadDocs();
+    const user = JSON.parse(localStorage.getItem("user") || "null");
+    if (!user) return;
+
+    fetch(`${backend}/projects?user_id=${user.id}`)
+      .then((res) => res.json())
+      .then((data) => setProjects(data.projects || []));
   }, []);
 
+  // 프로젝트 자동 갱신
+  useEffect(() => {
+    const user = JSON.parse(localStorage.getItem("user") || "null");
+    if (!user) return;
+
+    fetch(`${backend}/projects?user_id=${user.id}`)
+      .then((res) => res.json())
+      .then((data) => setProjects(data.projects || []));
+  }, [projectRefreshKey]);
+
+  // -----------------------------
+  // 채팅 + 파일 + LoRA 목록 로드
+  // -----------------------------
+  useEffect(() => {
+    if (!projectId) return;
+
+    fetch(`${backend}/projects/${projectId}/chats`)
+      .then((res) => res.json())
+      .then((data) => setChats(data.chats || []));
+
+    fetch(`${backend}/projects/${projectId}/documents`)
+      .then((res) => res.json())
+      .then((data) => setProjectFiles(data.documents || []));
+
+    // 🔥 LoRA 목록도 가져오기
+    fetch(`${backend}/lora/list?project_id=${projectId}`)
+      .then((res) => res.json())
+      .then((data) => setLoraList(data.loras || []));
+  }, [projectId]);
+
+  // -----------------------------
+  // ★ 채팅 생성 처리 함수 (모달에서 호출)
+  // -----------------------------
+  async function handleCreateChat(data: any) {
+    // case 1) 일반 채팅
+    if (data.lora_id === null && !data.newLora) {
+      await fetch(`${backend}/projects/${projectId}/chats`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: data.title, lora_id: null }),
+      });
+    }
+
+    // case 2) 기존 LoRA 연결
+    if (data.lora_id && !data.newLora) {
+      await fetch(`${backend}/projects/${projectId}/chats`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: data.title, lora_id: data.lora_id }),
+      });
+    }
+
+    // case 3) 새 LoRA 만들기
+    if (data.newLora) {
+      // 1) LoRA 생성
+      const res1 = await fetch(`${backend}/lora`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          name: data.newLora.name,
+          description: data.newLora.purpose,
+          base_model: data.newLora.base_model,
+        }),
+      });
+      const d1 = await res1.json();
+      const newLoraId = d1.lora_id;
+
+      // 2) 학습 시작
+      await fetch(`${backend}/lora/${newLoraId}/train`, {
+        method: "POST",
+      });
+
+      // 3) LoRA가 연결된 채팅 생성
+      await fetch(`${backend}/projects/${projectId}/chats`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: data.title, lora_id: newLoraId }),
+      });
+    }
+
+    // 리스트 갱신
+    const res2 = await fetch(`${backend}/projects/${projectId}/chats`);
+    const data2 = await res2.json();
+    setChats(data2.chats || []);
+  }
+
   return (
-    <div
+    <aside
       style={{
         width: "260px",
         borderRight: "1px solid #ddd",
-        background: "#fff",
         padding: "1rem",
+        background: "#fafafa",
         overflowY: "auto",
       }}
     >
-      <h3 style={{ marginBottom: "1rem" }}>📄 문서 목록</h3>
+      {/* ---------------------- 프로젝트 목록 ---------------------- */}
+      <div style={{ marginBottom: "1.2rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <b>📁 프로젝트</b>
+          <button onClick={() => router.push("/project-select")}>+</button>
+        </div>
 
-      {docs.length === 0 && <p style={{ color: "#777" }}>문서 없음</p>}
-
-      {docs.map((doc) => (
-        <div
-          key={doc.id}
-          onClick={() => onSelect(doc.id)}   // ⬅️ 문서 클릭 → 모달 열기
-          style={{
-            padding: "0.7rem",
-            background: "#f3f3f3",
-            borderRadius: "8px",
-            marginBottom: "0.7rem",
-            cursor: "pointer",           // 클릭 느낌
-          }}
-        >
-          <div style={{ fontSize: "0.9rem" }}>{doc.filename}</div>
-
-          <button
-            onClick={(e) => {
-              e.stopPropagation();  // ⬅️ 삭제 버튼 눌러도 모달 안 뜨게
-              deleteDoc(doc.id);
+        {projects.map((p) => (
+          <div
+            key={p.id}
+            onClick={() => {
+              setProjectId(p.id);
+              localStorage.setItem("project_id", String(p.id));
             }}
             style={{
+              padding: "6px",
               marginTop: "6px",
-              width: "100%",
-              background: "#ff5c5c",
-              border: "none",
-              padding: "6px 0",
               borderRadius: "6px",
-              color: "white",
               cursor: "pointer",
+              background: projectId === p.id ? "#4a5cff" : "#eee",
+              color: projectId === p.id ? "white" : "black",
             }}
           >
-            삭제
-          </button>
+            {p.name}
+          </div>
+        ))}
+      </div>
+
+      {/* ---------------------- 채팅 목록 ---------------------- */}
+      <div style={{ marginBottom: "1.2rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <b>💬 채팅방</b>
+          <button onClick={() => setShowModal(true)}>+</button>
         </div>
-      ))}
-    </div>
+
+        {chats.map((c) => (
+          <div
+            key={c.id}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: "6px",
+              marginTop: "6px",
+              borderRadius: "6px",
+              cursor: "pointer",
+              background: chatId === c.id ? "#4a5cff" : "#eee",
+              color: chatId === c.id ? "white" : "black",
+            }}
+          >
+            <span
+              onClick={async () => {
+                setChatId(c.id);
+                localStorage.setItem("chat_id", String(c.id));
+
+                const res = await fetch(`${backend}/chats/${c.id}`);
+                const data = await res.json();
+                setChatHistory(data.history || []);
+              }}
+              style={{ flex: 1 }}
+            >
+              {c.title}
+            </span>
+
+            <button
+              onClick={async (e) => {
+                e.stopPropagation();
+
+                const ok = confirm(`"${c.title}" 채팅을 삭제할까요?`);
+                if (!ok) return;
+
+                await fetch(`${backend}/chats/${c.id}`, { method: "DELETE" });
+
+                const res = await fetch(`${backend}/projects/${projectId}/chats`);
+                const data = await res.json();
+                setChats(data.chats || []);
+              }}
+            >
+              🗑
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {/* ---------------------- 프로젝트 파일 목록 ---------------------- */}
+      <div>
+        <b>📂 프로젝트 파일</b>
+        {projectFiles.length === 0 && (
+          <p style={{ fontSize: "12px", color: "#777" }}>업로드된 파일 없음</p>
+        )}
+
+        {projectFiles.map((f) => (
+          <div
+            key={f.id}
+            style={{
+              fontSize: "13px",
+              padding: "4px",
+              marginTop: "4px",
+              borderRadius: "4px",
+              background: "#eee",
+            }}
+          >
+            📄 {f.filename}
+          </div>
+        ))}
+      </div>
+
+      {showModal && (
+        <CreateChatModal
+          onClose={() => setShowModal(false)}
+          onCreate={handleCreateChat}
+          loraList={loraList}
+        />
+      )}
+    </aside>
   );
 }
