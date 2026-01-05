@@ -561,50 +561,59 @@ class LoraStatusResponse(BaseModel):
 
 @app.post("/chat_stream")
 async def chat_stream(request: ChatStreamRequest):
-    query = request.query
-    project_id = request.project_id
-    chat_id = request.chat_id
+    try:
+        query = request.query
+        project_id = request.project_id
+        chat_id = request.chat_id
 
-    # 채팅방 없으면 자동 생성
-    if chat_id is None:
+        # OpenAI API 키 확인
+        if not os.getenv("OPENAI_API_KEY"):
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.")
+
+        # 채팅방 없으면 자동 생성
+        if chat_id is None:
+            cursor.execute(
+                "INSERT INTO chats (project_id, title, created_at) VALUES (?, ?, datetime('now'))",
+                (project_id, query[:20] if len(query) > 20 else query),
+            )
+            conn.commit()
+            chat_id = cursor.lastrowid
+
+        # 유저 메시지 저장
         cursor.execute(
-            "INSERT INTO chats (project_id, title, created_at) VALUES (?, ?, datetime('now'))",
-            (project_id, query[:20]),
+            "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, ?, ?, datetime('now'))",
+            (chat_id, "user", query),
         )
         conn.commit()
-        chat_id = cursor.lastrowid
 
-    # 유저 메시지 저장
-    cursor.execute(
-        "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, ?, ?, datetime('now'))",
-        (chat_id, "user", query),
-    )
-    conn.commit()
+        # ✅ LoRA 연결 여부 확인
+        cursor.execute("SELECT lora_id FROM chats WHERE id = ?", (chat_id,))
+        row = cursor.fetchone()
+        lora_id = row[0] if row else None
 
-    # ✅ LoRA 연결 여부 확인
-    cursor.execute("SELECT lora_id FROM chats WHERE id = ?", (chat_id,))
-    row = cursor.fetchone()
-    lora_id = row[0] if row else None
+        adapter_path = None
+        if lora_id:
+            cursor.execute("SELECT adapter_path FROM lora_profiles WHERE id = ?", (lora_id,))
+            r2 = cursor.fetchone()
+            adapter_path = r2[0] if r2 else None
+            # 지금은 adapter_path만 읽어오고, 실제 추론은 OpenAI로.
+            # 나중에 로컬 Mistral+LoRA 서버를 붙이면 여기서 분기.
 
-    adapter_path = None
-    if lora_id:
-        cursor.execute("SELECT adapter_path FROM lora_profiles WHERE id = ?", (lora_id,))
-        r2 = cursor.fetchone()
-        adapter_path = r2[0] if r2 else None
-        # 지금은 adapter_path만 읽어오고, 실제 추론은 OpenAI로.
-        # 나중에 로컬 Mistral+LoRA 서버를 붙이면 여기서 분기.
+        # 프로젝트별 FAISS 인덱스
+        idx, docs = get_or_create_index(project_id)
 
-    # 프로젝트별 FAISS 인덱스
-    idx, docs = get_or_create_index(project_id)
+        context = ""
+        if idx.ntotal > 0:
+            try:
+                emb = get_embedding(query).reshape(1, -1)
+                k = min(3, len(docs))
+                D, I = idx.search(emb, k)
+                context = "\n".join([docs[i] for i in I[0] if i < len(docs)])
+            except Exception as e:
+                print(f"임베딩 검색 에러: {e}")
+                context = ""
 
-    context = ""
-    if idx.ntotal > 0:
-        emb = get_embedding(query).reshape(1, -1)
-        k = min(3, len(docs))
-        D, I = idx.search(emb, k)
-        context = "\n".join([docs[i] for i in I[0] if i < len(docs)])
-
-    prompt = f"""
+        prompt = f"""
 아래 문서 기반으로만 답하시오.
 문서에 없는 내용이면 "모르겠습니다"라고 대답하십시오.
 만약 정보에 관한 대화가 아닌 일상 대화라면, 친구처럼 대답하세요.
@@ -615,28 +624,41 @@ async def chat_stream(request: ChatStreamRequest):
 질문: {query}
 """
 
-    def generate():
-        completion = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            stream=True,
-        )
+        def generate():
+            try:
+                completion = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    stream=True,
+                )
 
-        answer = ""
+                answer = ""
 
-        for chunk in completion:
-            if chunk.choices and chunk.choices[0].delta.content:
-                token = chunk.choices[0].delta.content
-                answer += token
-                yield token
+                for chunk in completion:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        token = chunk.choices[0].delta.content
+                        answer += token
+                        yield token
 
-        cursor.execute(
-            "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, ?, ?, datetime('now'))",
-            (chat_id, "assistant", answer),
-        )
-        conn.commit()
+                cursor.execute(
+                    "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, ?, ?, datetime('now'))",
+                    (chat_id, "assistant", answer),
+                )
+                conn.commit()
+            except Exception as e:
+                error_msg = f"OpenAI API 에러: {str(e)}"
+                print(error_msg)
+                yield f"\n\n[에러 발생: {error_msg}]\n"
 
-    return StreamingResponse(generate(), media_type="text/plain")
+        return StreamingResponse(generate(), media_type="text/plain")
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = f"서버 에러: {str(e)}\n{traceback.format_exc()}"
+        print(error_detail)
+        raise HTTPException(status_code=500, detail=f"채팅 처리 중 에러 발생: {str(e)}")
 
 
 

@@ -19,10 +19,65 @@
 
 .card {
   flex: 1;
-  background: #fff;
+  background: #111;
   padding: 1.5rem;
   border-radius: 12px;
   box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+}
+
+.uploadCard {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.cardHeader h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.cardSubTitle {
+  display: block;
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+  color: #aaa;
+}
+
+.uploadButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.6rem 1.2rem;
+  background: #4a5cff;
+  color: #fff;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  border: none;
+  width: fit-content;
+}
+
+.uploadButton:hover {
+  background: #293aff;
+}
+
+.uploadInfo {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  color: #ddd;
+}
+
+.fileName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 70%;
+}
+
+.uploadStatus {
+  color: #4a5cff;
 }
 
 .inputRow {
@@ -57,19 +112,62 @@
 }
 
 .resultCard {
-  background: #f4f4f4;
-  padding: 1rem;
+  background: #1a1a1a;
+  padding: 0.9rem 1rem;
   border-radius: 8px;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.6rem;
+  border: 1px solid #333;
 }
 
 .score {
-  color: #777;
-  font-size: 0.85rem;
+  color: #999;
+  font-size: 0.8rem;
+}
+
+.searchCard {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.searchInputRow {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.searchInputRow input {
+  flex: 1;
+  padding: 0.65rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid #444;
+  background: #181818;
+  color: #f5f5f5;
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.searchInputRow input:focus {
+  border-color: #4a5cff;
+  box-shadow: 0 0 0 1px rgba(74, 92, 255, 0.5);
+}
+
+.searchInputRow button {
+  padding: 0.65rem 1.2rem;
+  border-radius: 999px;
+  border: none;
+  background: #4a5cff;
+  color: white;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.searchInputRow button:hover {
+  background: #293aff;
 }
 
 .chatBox {
-  background: white;
+  background: #111;
   padding: 1.5rem;
   border-radius: 12px;
   box-shadow: 0 3px 10px rgba(0,0,0,0.1);
@@ -80,7 +178,7 @@
   padding: 1rem;
   overflow-y: auto;
   border-radius: 8px;
-  background: #fafafa;
+  background: #1a1a1a;
   margin-bottom: 1rem;
   border: 1px solid #ddd;
 }
@@ -91,6 +189,8 @@
   margin-bottom: 10px;
   border-radius: 12px;
   max-width: 70%;
+  width: fit-content;
+  color: black;
   margin-left: auto;
 }
 
@@ -100,8 +200,41 @@
   margin-bottom: 10px;
   border-radius: 12px;
   max-width: 70%;
+  width: fit-content;
+  color: black;
 }
 .chatInputRow {
   display: flex;
   gap: 1rem;
+}
+
+.chatInputRow input {
+  flex: 1;
+  padding: 0.75rem 1rem;
+  border-radius: 999px;
+  border: 1px solid #444;
+  background: #181818;
+  color: #f5f5f5;
+  font-size: 0.95rem;
+  outline: none;
+}
+
+.chatInputRow input:focus {
+  border-color: #4a5cff;
+  box-shadow: 0 0 0 1px rgba(74, 92, 255, 0.5);
+}
+
+.chatInputRow button {
+  padding: 0.75rem 1.4rem;
+  border-radius: 999px;
+  border: none;
+  background: #4a5cff;
+  color: white;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chatInputRow button:hover {
+  background: #293aff;
 }

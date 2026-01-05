@@ -128,7 +128,7 @@ export default function Sidebar({
         width: "260px",
         borderRight: "1px solid #ddd",
         padding: "1rem",
-        background: "#fafafa",
+        background: "#1a1a1a",
         overflowY: "auto",
       }}
     >

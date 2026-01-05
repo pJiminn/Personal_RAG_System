@@ -61,7 +61,7 @@ export default function LoginPage() {
       <div
         style={{
           width: "350px",
-          background: "white",
+          background: "black",
           padding: "2rem",
           borderRadius: "12px",
           boxShadow: "0 5px 15px rgba(0,0,0,0.15)",
@@ -73,7 +73,7 @@ export default function LoginPage() {
           placeholder="아이디"
           value={username}
           onChange={(e) => setUsername(e.target.value)}
-          style={{ width: "100%", padding: "10px", marginBottom: "10px" }}
+          style={{ width: "100%", padding: "10px", marginBottom: "10px", border: "1px solid white", borderRadius: "8px",}}
         />
 
         <input
@@ -81,7 +81,7 @@ export default function LoginPage() {
           placeholder="비밀번호"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          style={{ width: "100%", padding: "10px", marginBottom: "14px" }}
+          style={{ width: "100%", padding: "10px", marginBottom: "14px", border: "1px solid white", borderRadius: "8px",}}
         />
 
         <button

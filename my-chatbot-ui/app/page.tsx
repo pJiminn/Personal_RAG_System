@@ -361,7 +361,7 @@ return (
       </div>
     ) : (
     
-    <div style={{ display: "flex", height: "100vh", width: "100vw" }}>
+    <div style={{ display: "flex", height: "100vh", width: "100vw"}}>
       {/* ✅ 사이드바 영역 (고정 폭) */}
       <div style={{ width: "260px", flexShrink: 0 }}>
         <Sidebar
@@ -378,7 +378,7 @@ return (
         style={{
           flex: 1,
           padding: "2rem",
-          background: "#fafafa",
+          background: "#1a1a1a",
           overflowY: "auto",
         }}
       >
@@ -411,27 +411,56 @@ return (
 
         {/* ✅ 업로드 / 검색 */}
         <div className={styles.row}>
-          <div className={styles.card}>
-            <h3>📄 문서 업로드</h3>
-            <input type="file" accept=".pdf" onChange={handleUpload} />
-            <p>{fileName || "선택된 파일 없음"}</p>
-            {uploading && <p>업로드 중...</p>}
+          <div className={`${styles.card} ${styles.uploadCard}`}>
+            <div className={styles.cardHeader}>
+              <h3>📄 문서 업로드</h3>
+              <span className={styles.cardSubTitle}>
+                PDF 파일을 업로드하면 해당 문서를 기반으로 질의응답을 할 수 있어요.
+              </span>
+            </div>
+            <label className={styles.uploadButton}>
+              파일 선택
+              <input
+                type="file"
+                accept=".pdf"
+                onChange={handleUpload}
+                style={{ display: "none" }}
+              />
+            </label>
+            <div className={styles.uploadInfo}>
+              <span className={styles.fileName}>
+                {fileName || "선택된 파일 없음"}
+              </span>
+              {uploading && (
+                <span className={styles.uploadStatus}>업로드 중...</span>
+              )}
+            </div>
           </div>
 
-          <div className={styles.card}>
-            <h3>🔍 문서 검색</h3>
-            <input
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-            />
-            <button onClick={handleSearch}>검색</button>
+          <div className={`${styles.card} ${styles.searchCard}`}>
+            <div className={styles.cardHeader}>
+              <h3>🔍 문서 검색</h3>
+              <span className={styles.cardSubTitle}>
+                업로드된 문서에서 원하는 내용을 키워드로 빠르게 찾아보세요.
+              </span>
+            </div>
+            <div className={styles.searchInputRow}>
+              <input
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                placeholder="검색어를 입력하세요..."
+              />
+              <button onClick={handleSearch}>검색</button>
+            </div>
 
-            {searchResults.map((r, i) => (
-              <div key={i}>
-                <b>Score:</b> {r.score}
-                <p>{r.text}</p>
-              </div>
-            ))}
+            <div className={styles.searchResults}>
+              {searchResults.map((r, i) => (
+                <div key={i} className={styles.resultCard}>
+                  <div className={styles.score}>Score: {r.score}</div>
+                  <p>{r.text}</p>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -456,7 +485,7 @@ return (
             <input
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              placeholder="질문 입력"
+              placeholder="해당 문서에 대한 질문을 입력하세요..."
             />
             <button onClick={handleChat}>전송</button>
           </div>

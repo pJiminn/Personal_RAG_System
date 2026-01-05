@@ -88,7 +88,7 @@ export default function ProjectSelectPage() {
       <div
         style={{
           width: "900px",
-          background: "white",
+          background: "black",
           padding: "2.5rem",
           borderRadius: "16px",
           boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
