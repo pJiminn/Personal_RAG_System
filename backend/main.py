@@ -4,13 +4,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
+from db_init import init_db
 
 from transformers import Trainer
 import shutil
 import os
 import pdfplumber
 import json
-import sqlite3
+import pymysql
 import numpy as np
 import faiss
 from openai import OpenAI
@@ -54,108 +55,21 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # ============================================================
 # [3] SQLite DB 설정
 # ============================================================
-DB_PATH = "rag_docs.db"
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+
+conn = pymysql.connect(
+    host="localhost",
+    user=os.getenv("DB_USER"),
+    password=os.getenv("DB_PASSWORD"),
+    database=os.getenv("DB_NAME"),
+    charset="utf8mb4",
+    autocommit=True,
+    cursorclass=pymysql.cursors.Cursor
+)
+init_db(conn)
 def get_cursor():
     return conn.cursor()
 
-cursor = get_cursor()
 
-cursor.execute("PRAGMA foreign_keys = ON")
-
-# ----------------- 기본 테이블 생성 -----------------
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    password TEXT
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS projects (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    name TEXT,
-    description TEXT,
-    persona TEXT,
-    created_at TEXT,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS chats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER,
-    title TEXT,
-    created_at TEXT,
-    lora_id INTEGER,
-    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS chat_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id INTEGER,
-    role TEXT,
-    content TEXT,
-    created_at TEXT,
-    FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS documents (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER,
-    filename TEXT,
-    created_at TEXT,
-    UNIQUE(project_id, filename),
-    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS document_chunks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    document_id INTEGER,
-    chunk TEXT,
-    embedding TEXT,
-    FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS chat_files (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id INTEGER,
-    file_id INTEGER,
-    created_at TEXT,
-    FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE,
-    FOREIGN KEY(file_id) REFERENCES documents(id) ON DELETE CASCADE
-)
-""")
-
-
-## 로라 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS lora_profiles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL,
-    name TEXT,
-    description TEXT,
-    purpose TEXT,
-    status TEXT,
-    adapter_path TEXT,
-    base_model TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-)
-""")
-
-
-conn.commit()
 
 # ============================================================
 # [4] FAISS - 프로젝트별 인덱스 관리
@@ -176,28 +90,32 @@ def get_or_create_index(project_id: int):
 
 
 def load_db_to_faiss():
-    """DB 전체를 프로젝트별로 FAISS 인덱스로 로드"""
-    project_indices.clear()
-    project_documents.clear()
+    cursor = get_cursor()
+    try :
+        """DB 전체를 프로젝트별로 FAISS 인덱스로 로드"""
+        project_indices.clear()
+        project_documents.clear()
 
-    cursor.execute(
-        """
-        SELECT dc.id, d.project_id, dc.chunk, dc.embedding
-        FROM document_chunks dc
-        JOIN documents d ON dc.document_id = d.id
-        """
-    )
-    rows = cursor.fetchall()
+        cursor.execute(
+            """
+            SELECT dc.id, d.project_id, dc.chunk, dc.embedding
+            FROM document_chunks dc
+            JOIN documents d ON dc.document_id = d.id
+            """
+        )
+        rows = cursor.fetchall()
 
-    for _chunk_id, project_id, chunk_text, emb_json in rows:
-        idx, docs = get_or_create_index(project_id)
-        emb = np.array(json.loads(emb_json), dtype="float32").reshape(1, -1)
-        idx.add(emb)
-        docs.append(chunk_text)
+        for _chunk_id, project_id, chunk_text, emb_json in rows:
+            idx, docs = get_or_create_index(project_id)
+            emb = np.array(json.loads(emb_json), dtype="float32").reshape(1, -1)
+            idx.add(emb)
+            docs.append(chunk_text)
 
-    print("[FAISS] 전체 로드 완료")
-    for pid, docs in project_documents.items():
-        print(f" - project {pid}: {len(docs)} chunks")
+        print("[FAISS] 전체 로드 완료")
+        for pid, docs in project_documents.items():
+            print(f" - project {pid}: {len(docs)} chunks")
+    finally :
+        cursor.close()
 
 
 # 서버 시작 시 DB → FAISS 로드
@@ -256,25 +174,29 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/signup")
+
 def signup(body: SignUpRequest):
-    cursor.execute(
-        "INSERT INTO users (username, password) VALUES (?, ?)",
-        (body.username, body.password),
-    )
-    conn.commit()
-    user_id = cursor.lastrowid
-    return {"user_id": user_id, "username": body.username}
+    cursor = get_cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO users (username, password) VALUES (%s, %s)",
+            (body.username, body.password),
+        )
+        conn.commit()
+        user_id = cursor.lastrowid
+        return {"user_id": user_id, "username": body.username}
+    finally :
+        cursor.close()
 
-
-@app.post("/login")
-def login(body: LoginRequest):
-    cursor.execute(
-        "SELECT id, password FROM users WHERE username = ?", (body.username,)
-    )
-    row = cursor.fetchone()
-    if not row or row[1] != body.password:
-        raise HTTPException(status_code=401, detail="invalid credentials")
-    return {"user_id": row[0], "username": body.username}
+# @app.post("/login")
+# def login(body: LoginRequest):
+#     cursor.execute(
+#         "SELECT id, password FROM users WHERE username = %s", (body.username,)
+#     )
+#     row = cursor.fetchone()
+#     if not row or row[1] != body.password:
+#         raise HTTPException(status_code=401, detail="invalid credentials")
+#     return {"user_id": row[0], "username": body.username}
 
 
 # ============================================================
@@ -287,70 +209,74 @@ class ProjectCreate(BaseModel):
     
 
 
-class ProjectCreate(BaseModel):
-    user_id: int
-    name: str
-    description: str
-    #persona: str   #  LoRA용 핵심 필드
-
 
 @app.post("/projects")
 def create_project(body: ProjectCreate):
+    cursor = get_cursor()
+    try:
+        cursor.execute("SELECT id FROM users WHERE id = %s", (body.user_id,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=400, detail="Invalid user_id")
 
-    # ✅ 유저 존재 검사 (FOREIGN KEY 방지)
-    cursor.execute("SELECT id FROM users WHERE id = ?", (body.user_id,))
-    user = cursor.fetchone()
-    if not user:
-        raise HTTPException(status_code=400, detail="Invalid user_id")
+        cursor.execute(
+            """
+            INSERT INTO projects (user_id, name, description, created_at)
+            VALUES (%s, %s, %s, NOW())
+            """,
+            (body.user_id, body.name, body.description),
+        )
+        conn.commit()
 
-    cursor.execute(
-        """
-        INSERT INTO projects (user_id, name, description, created_at)
-        VALUES (?, ?, ?, datetime('now'))
-        """,
-        (body.user_id, body.name, body.description),
-    )
-    conn.commit()
-
-    return {
-        "project_id": cursor.lastrowid,
-        "name": body.name,
-        "description": body.description,
-    }
+        return {
+            "project_id": cursor.lastrowid,
+            "name": body.name,
+            "description": body.description,
+        }
+    finally:
+        cursor.close()
 
 
 @app.get("/projects")
 def list_projects(user_id: int):
-    cursor.execute(
-        "SELECT id, name, description, created_at FROM projects WHERE user_id = ?",
-        (user_id,),
-    )
-    rows = cursor.fetchall()
-    return {
-        "projects": [
-            {
-                "id": r[0],
-                "name": r[1],
-                "description": r[2],
-                "created_at": r[3],
-            }
-            for r in rows
-        ]
-    }
+    cursor = get_cursor()
+    try:
+        cursor.execute(
+            "SELECT id, name, description, created_at FROM projects WHERE user_id = %s",
+            (user_id,),
+        )
+        rows = cursor.fetchall()
+        return {
+            "projects": [
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "description": r[2],
+                    "created_at": r[3],
+                }
+                for r in rows
+            ]
+        }
+    finally:
+        cursor.close()
 
 
 @app.delete("/projects/{project_id}")
 def delete_project(project_id: int):
-    cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
-    conn.commit()
+    cursor = get_cursor()
+    try:
+        cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+        conn.commit()
 
-    # FAISS 메모리에서도 제거
-    if project_id in project_indices:
-        del project_indices[project_id]
-    if project_id in project_documents:
-        del project_documents[project_id]
+        # FAISS 메모리에서도 제거
+        if project_id in project_indices:
+            del project_indices[project_id]
+        if project_id in project_documents:
+            del project_documents[project_id]
 
-    return {"message": "project deleted"}
+        return {"message": "project deleted"}
+    finally:
+        cursor.close()
 
 
 # ============================================================
@@ -358,156 +284,173 @@ def delete_project(project_id: int):
 # ============================================================
 @app.post("/projects/{project_id}/upload")
 async def upload_file(project_id: int, file: UploadFile = File(...)):
+    cursor = get_cursor()
+    try:
     # 프로젝트 존재 여부 확인
-    cursor.execute("SELECT id FROM projects WHERE id = ?", (project_id,))
-    if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="project not found")
+        cursor.execute("SELECT id FROM projects WHERE id = %s", (project_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="project not found")
 
-    # 1. 파일 저장
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        # 1. 파일 저장
+        file_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-    # 2. PDF → Text → Chunk
-    text = pdf_to_text(file_path)
-    chunks = chunk_text(text)
+        # 2. PDF → Text → Chunk
+        text = pdf_to_text(file_path)
+        chunks = chunk_text(text)
 
-    # 3. documents 테이블에 등록
-    cursor.execute(
-        """
-        INSERT OR IGNORE INTO documents (project_id, filename, created_at)
-        VALUES (?, ?, datetime('now'))
-        """,
-        (project_id, file.filename),
-    )
-    conn.commit()
-
-    cursor.execute(
-        "SELECT id FROM documents WHERE project_id = ? AND filename = ?",
-        (project_id, file.filename),
-    )
-    doc_row = cursor.fetchone()
-    if not doc_row:
-        raise HTTPException(status_code=500, detail="failed to create document")
-    document_id = doc_row[0]
-
-    # 4. 기존 청크 삭제 후 다시 삽입 (재업로드 대응)
-    cursor.execute(
-        "DELETE FROM document_chunks WHERE document_id = ?", (document_id,)
-    )
-    conn.commit()
-
-    # 5. 청크 + FAISS 반영
-    idx, docs = get_or_create_index(project_id)
-    saved_count = 0
-
-    for chunk in chunks:
-        emb = get_embedding(chunk)
-
+        # 3. documents 테이블에 등록
         cursor.execute(
-            """
-            INSERT INTO document_chunks (document_id, chunk, embedding)
-            VALUES (?, ?, ?)
+        """
+            INSERT INTO documents (project_id, filename, created_at)
+            VALUES (%s, %s, NOW())
+            ON DUPLICATE KEY UPDATE
+                id = LAST_INSERT_ID(id)
             """,
-            (document_id, chunk, json.dumps(emb.tolist())),
+            (project_id, file.filename),
         )
 
-        idx.add(emb.reshape(1, -1))
-        docs.append(chunk)
-        saved_count += 1
+        conn.commit()
 
-    conn.commit()
+        cursor.execute(
+            "SELECT id FROM documents WHERE project_id = %s AND filename = %s",
+            (project_id, file.filename),
+        )
+        doc_row = cursor.fetchone()
+        if not doc_row:
+            raise HTTPException(status_code=500, detail="failed to create document")
+        document_id = doc_row[0]
 
-    return {
-        "message": f"{file.filename} 업로드 완료",
-        "document_id": document_id,
-        "saved_chunks": saved_count,
-        "total_chunks": len(chunks),
-    }
+        # 4. 기존 청크 삭제 후 다시 삽입 (재업로드 대응)
+        cursor.execute(
+            "DELETE FROM document_chunks WHERE document_id = %s", (document_id,)
+        )
+        conn.commit()
 
+        # 5. 청크 + FAISS 반영
+        idx, docs = get_or_create_index(project_id)
+        saved_count = 0
+
+        for chunk in chunks:
+            emb = get_embedding(chunk)
+
+            cursor.execute(
+                """
+                INSERT INTO document_chunks (document_id, chunk, embedding)
+                VALUES (%s, %s, CAST(%s AS JSON))
+                """,
+                (document_id, chunk, json.dumps(emb.tolist())),
+            )
+
+            idx.add(emb.reshape(1, -1))
+            docs.append(chunk)
+            saved_count += 1
+
+        conn.commit()
+
+        return {
+            "message": f"{file.filename} 업로드 완료",
+            "document_id": document_id,
+            "saved_chunks": saved_count,
+            "total_chunks": len(chunks),
+        }
+    finally :
+        cursor.close()
 
 @app.get("/projects/{project_id}/documents")
 def list_documents(project_id: int):
-    cursor.execute(
-        """
-        SELECT id, filename, created_at
-        FROM documents
-        WHERE project_id = ?
-        ORDER BY id DESC
-        """,
-        (project_id,),
-    )
-    rows = cursor.fetchall()
-    return {
-        "documents": [
-            {"id": r[0], "filename": r[1], "created_at": r[2]} for r in rows
-        ]
-    }
+    cursor = get_cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT id, filename, created_at
+            FROM documents
+            WHERE project_id = %s
+            ORDER BY id DESC
+            """,
+            (project_id,),
+        )
+        rows = cursor.fetchall()
+        return {
+            "documents": [
+                {"id": r[0], "filename": r[1], "created_at": r[2]} for r in rows
+            ]
+        }
+    finally:
+        cursor.close()
 
 
 @app.delete("/documents/{document_id}")
+
 def delete_document(document_id: int):
+    cursor = get_cursor()
+    try:
     # 어떤 프로젝트에 속한 문서인지 확인
-    cursor.execute(
-        """
-        SELECT project_id FROM documents WHERE id = ?
-        """,
-        (document_id,),
-    )
-    row = cursor.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="document not found")
+        cursor.execute(
+            """
+            SELECT project_id FROM documents WHERE id = %s
+            """,
+            (document_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="document not found")
 
-    project_id = row[0]
+        project_id = row[0]
 
-    # DB 삭제 (ON DELETE CASCADE로 청크 같이 삭제)
-    cursor.execute("DELETE FROM documents WHERE id = ?", (document_id,))
-    conn.commit()
+        # DB 삭제 (ON DELETE CASCADE로 청크 같이 삭제)
+        cursor.execute("DELETE FROM documents WHERE id = %s", (document_id,))
+        conn.commit()
 
-    # 해당 프로젝트의 FAISS 인덱스를 다시 구축
-    idx, docs = get_or_create_index(project_id)
-    idx.reset()
-    docs.clear()
+        # 해당 프로젝트의 FAISS 인덱스를 다시 구축
+        idx, docs = get_or_create_index(project_id)
+        idx.reset()
+        docs.clear()
 
-    cursor.execute(
-        """
-        SELECT dc.chunk, dc.embedding
-        FROM document_chunks dc
-        JOIN documents d ON dc.document_id = d.id
-        WHERE d.project_id = ?
-        """,
-        (project_id,),
-    )
-    rows = cursor.fetchall()
+        cursor.execute(
+            """
+            SELECT dc.chunk, dc.embedding
+            FROM document_chunks dc
+            JOIN documents d ON dc.document_id = d.id
+            WHERE d.project_id = %s
+            """,
+            (project_id,),
+        )
+        rows = cursor.fetchall()
 
-    for chunk_text, emb_json in rows:
-        emb = np.array(json.loads(emb_json), dtype="float32").reshape(1, -1)
-        idx.add(emb)
-        docs.append(chunk_text)
+        for chunk_text, emb_json in rows:
+            emb = np.array(json.loads(emb_json), dtype="float32").reshape(1, -1)
+            idx.add(emb)
+            docs.append(chunk_text)
 
-    return {"message": "문서 삭제 및 인덱스 재구성 완료"}
-
+        return {"message": "문서 삭제 및 인덱스 재구성 완료"}
+    finally :
+        cursor.close()
 
 @app.get("/documents/{document_id}/detail")
 def get_document_detail(document_id: int):
-    cursor.execute(
-        "SELECT filename, project_id FROM documents WHERE id = ?",
-        (document_id,),
-    )
-    doc = cursor.fetchone()
-    if not doc:
-        raise HTTPException(status_code=404, detail="not found")
+    cursor = get_cursor()
+    try:
+        cursor.execute(
+            "SELECT filename, project_id FROM documents WHERE id = %s",
+            (document_id,),
+        )
+        doc = cursor.fetchone()
+        if not doc:
+            raise HTTPException(status_code=404, detail="not found")
 
-    filename, project_id = doc
+        filename, project_id = doc
 
-    cursor.execute(
-        "SELECT chunk FROM document_chunks WHERE document_id = ?",
-        (document_id,),
-    )
-    chunks = [r[0] for r in cursor.fetchall()]
+        cursor.execute(
+            "SELECT chunk FROM document_chunks WHERE document_id = %s",
+            (document_id,),
+        )
+        chunks = [r[0] for r in cursor.fetchall()]
 
-    return {"filename": filename, "project_id": project_id, "chunks": chunks}
-
+        return {"filename": filename, "project_id": project_id, "chunks": chunks}
+    finally:
+        cursor.close()
 
 # ============================================================
 # [9] 프로젝트별 검색 & RAG 챗봇
@@ -561,7 +504,9 @@ class LoraStatusResponse(BaseModel):
 
 @app.post("/chat_stream")
 async def chat_stream(request: ChatStreamRequest):
+    cursor = get_cursor()
     try:
+
         query = request.query
         project_id = request.project_id
         chat_id = request.chat_id
@@ -573,7 +518,7 @@ async def chat_stream(request: ChatStreamRequest):
         # 채팅방 없으면 자동 생성
         if chat_id is None:
             cursor.execute(
-                "INSERT INTO chats (project_id, title, created_at) VALUES (?, ?, datetime('now'))",
+                "INSERT INTO chats (project_id, title, created_at) VALUES (%s, %s, NOW())",
                 (project_id, query[:20] if len(query) > 20 else query),
             )
             conn.commit()
@@ -581,19 +526,19 @@ async def chat_stream(request: ChatStreamRequest):
 
         # 유저 메시지 저장
         cursor.execute(
-            "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, ?, ?, datetime('now'))",
+            "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (%s, %s, %s, NOW())",
             (chat_id, "user", query),
         )
         conn.commit()
 
         # ✅ LoRA 연결 여부 확인
-        cursor.execute("SELECT lora_id FROM chats WHERE id = ?", (chat_id,))
+        cursor.execute("SELECT lora_id FROM chats WHERE id = %s", (chat_id,))
         row = cursor.fetchone()
         lora_id = row[0] if row else None
 
         adapter_path = None
         if lora_id:
-            cursor.execute("SELECT adapter_path FROM lora_profiles WHERE id = ?", (lora_id,))
+            cursor.execute("SELECT adapter_path FROM lora_profiles WHERE id = %s", (lora_id,))
             r2 = cursor.fetchone()
             adapter_path = r2[0] if r2 else None
             # 지금은 adapter_path만 읽어오고, 실제 추론은 OpenAI로.
@@ -623,9 +568,10 @@ async def chat_stream(request: ChatStreamRequest):
 
 질문: {query}
 """
+    finally:
+        cursor.close()
 
         def generate():
-            try:
                 completion = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}],
@@ -639,27 +585,26 @@ async def chat_stream(request: ChatStreamRequest):
                         token = chunk.choices[0].delta.content
                         answer += token
                         yield token
-
-                cursor.execute(
-                    "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, ?, ?, datetime('now'))",
-                    (chat_id, "assistant", answer),
-                )
-                conn.commit()
-            except Exception as e:
-                error_msg = f"OpenAI API 에러: {str(e)}"
-                print(error_msg)
-                yield f"\n\n[에러 발생: {error_msg}]\n"
+                cursor2 = get_cursor()
+                try:
+                    cursor.execute(
+                        "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (%s, %s, %s, NOW())",
+                        (chat_id, "assistant", answer),
+                    )
+                    conn.commit()
+                finally:
+                    cursor2.close()
 
         return StreamingResponse(generate(), media_type="text/plain")
     
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback
-        error_detail = f"서버 에러: {str(e)}\n{traceback.format_exc()}"
-        print(error_detail)
-        raise HTTPException(status_code=500, detail=f"채팅 처리 중 에러 발생: {str(e)}")
-
+    # except HTTPException:
+    #     raise
+    # except Exception as e:
+    #     import traceback
+    #     error_detail = f"서버 에러: {str(e)}\n{traceback.format_exc()}"
+    #     print(error_detail)
+    #     raise HTTPException(status_code=500, detail=f"채팅 처리 중 에러 발생: {str(e)}")
+    
 
 
 # ============================================================
@@ -667,40 +612,43 @@ async def chat_stream(request: ChatStreamRequest):
 # ============================================================
 
 def ensure_default_project() -> int:
-    """기존 /upload, /chat_stream 등 쓰던 UI를 살리기 위한 기본 프로젝트"""
-    # 1) 기본 유저 생성
-    cursor.execute("SELECT id FROM users WHERE username = 'default'")
-    row = cursor.fetchone()
-    if not row:
-        cursor.execute(
-            "INSERT INTO users (username, password) VALUES ('default', 'default')"
-        )
-        conn.commit()
-        user_id = cursor.lastrowid
-    else:
-        user_id = row[0]
+    cursor = get_cursor()
+    try:
+        """기존 /upload, /chat_stream 등 쓰던 UI를 살리기 위한 기본 프로젝트"""
+        # 1) 기본 유저 생성
+        cursor.execute("SELECT id FROM users WHERE username = 'default'")
+        row = cursor.fetchone()
+        if not row:
+            cursor.execute(
+                "INSERT INTO users (username, password) VALUES ('default', 'default')"
+            )
+            conn.commit()
+            user_id = cursor.lastrowid
+        else:
+            user_id = row[0]
 
-    # 2) 기본 프로젝트 생성
-    cursor.execute(
-        "SELECT id FROM projects WHERE user_id = ? AND name = 'default'",
-        (user_id,),
-    )
-    row = cursor.fetchone()
-    if not row:
+        # 2) 기본 프로젝트 생성
         cursor.execute(
-            """
-            INSERT INTO projects (user_id, name, description, created_at)
-            VALUES (?, 'default', '기본 프로젝트', datetime('now'))
-            """,
+            "SELECT id FROM projects WHERE user_id = %s AND name = 'default'",
             (user_id,),
         )
-        conn.commit()
-        project_id = cursor.lastrowid
-    else:
-        project_id = row[0]
+        row = cursor.fetchone()
+        if not row:
+            cursor.execute(
+                """
+                INSERT INTO projects (user_id, name, description, created_at)
+                VALUES (%s, 'default', '기본 프로젝트', NOW())
+                """,
+                (user_id,),
+            )
+            conn.commit()
+            project_id = cursor.lastrowid
+        else:
+            project_id = row[0]
 
-    return project_id
-
+        return project_id
+    finally:
+        cursor.close()
 
 DEFAULT_PROJECT_ID = ensure_default_project()
 
@@ -717,7 +665,8 @@ async def upload_file_legacy(file: UploadFile = File(...)):
 async def chat_stream_legacy(request: Dict[str, str]):
     """기존 프론트용: project_id 없이 쓰던 버전"""
     query = request["query"]
-    body = ChatRequest(project_id=DEFAULT_PROJECT_ID, query=query)
+    body = ChatStreamRequest(project_id=DEFAULT_PROJECT_ID, query=query)
+
     return await chat_stream(body)
 
 
@@ -736,7 +685,7 @@ def list_documents_legacy():
 # @app.post("/projects/{project_id}/chats")
 # def create_chat(project_id: int):
 #     cursor.execute(
-#         "INSERT INTO chats (project_id, title, created_at) VALUES (?, ?, datetime('now'))",
+#         "INSERT INTO chats (project_id, title, created_at) VALUES (%s, %s, datetime('now'))",
 #         (project_id, "새 채팅")
 #     )
 #     conn.commit()
@@ -751,59 +700,42 @@ def list_documents_legacy():
 @app.get("/projects/{project_id}/chats")
 async def list_chats(project_id: int):
     cursor = get_cursor()
+    try:
+        cursor.execute(
+            "SELECT id, title, created_at FROM chats WHERE project_id = %s ORDER BY id DESC",
+            (project_id,)
+        )
+        rows = cursor.fetchall()
+        cursor.close()
 
-    cursor.execute(
-        "SELECT id, title, created_at FROM chats WHERE project_id = ? ORDER BY id DESC",
-        (project_id,)
-    )
-    rows = cursor.fetchall()
-    cursor.close()
-
-    return {
-        "chats": [
-            {"id": r[0], "title": r[1], "created_at": r[2]}
-            for r in rows
-        ]
-    }
-
+        return {
+            "chats": [
+                {"id": r[0], "title": r[1], "created_at": r[2]}
+                for r in rows
+            ]
+        }
+    finally:
+        cursor.close()
 # 
 @app.get("/chats/{chat_id}")
 async def get_chat_history(chat_id: int):
-    cursor.execute(
-        "SELECT role, content FROM chat_messages WHERE chat_id = ? ORDER BY id ASC",
-        (chat_id,)
-    )
-    rows = cursor.fetchall()
-
-    return {
-        "history": [
-            {"role": r[0], "content": r[1]} for r in rows
-        ]
-    }
-
-@app.post("/login")
-async def login(req: Dict[str, str]):
-    email = req["email"]
-
-    cursor.execute("SELECT id, email FROM users WHERE email = ?", (email,))
-    user = cursor.fetchone()
-
-    if not user:
+    cursor = get_cursor()
+    try:
         cursor.execute(
-            "INSERT INTO users (email) VALUES (?)",
-            (email,)
+            "SELECT role, content FROM chat_messages WHERE chat_id = %s ORDER BY id ASC",
+            (chat_id,)
         )
-        conn.commit()
-        user_id = cursor.lastrowid
-    else:
-        user_id = user[0]
+        rows = cursor.fetchall()
 
-    return {
-        "user": {
-            "id": user_id,
-            "email": email
+        return {
+            "history": [
+                {"role": r[0], "content": r[1]} for r in rows
+            ]
         }
-    }
+    finally :
+        cursor.close()
+
+
 
 
 # ---------------------------
@@ -811,47 +743,54 @@ async def login(req: Dict[str, str]):
 # ---------------------------
 @app.post("/auth/register")
 async def register(data: Dict[str, str]):
-    username = data["username"]
-    password = data["password"]
+    cursor = get_cursor()
+    try: 
+        username = data["username"]
+        password = data["password"]
 
-    try:
-        cursor.execute(
-            "INSERT INTO users (username, password) VALUES (?, ?)",
-            (username, password)
-        )
-        conn.commit()
-    except:
-        return {"success": False, "message": "이미 존재하는 아이디"}
+        try:
+            cursor.execute(
+                "INSERT INTO users (username, password) VALUES (%s, %s)",
+                (username, password)
+            )
+            conn.commit()
+        except:
+            return {"success": False, "message": "이미 존재하는 아이디"}
 
-    return {"success": True}
-
+        return {"success": True}
+    
+    finally:
+        cursor.close()
 
 # ---------------------------
 # [AUTH] 로그인
 # ---------------------------
 @app.post("/auth/login")
 async def login(data: Dict[str, str]):
-    username = data["username"]
-    password = data["password"]
+    cursor = get_cursor()
+    try:
+        username = data["username"]
+        password = data["password"]
 
-    cursor.execute(
-        "SELECT id, username FROM users WHERE username=? AND password=?",
-        (username, password)
-    )
+        cursor.execute(
+            "SELECT id, username FROM users WHERE username=%s AND password=%s",
+            (username, password)
+        )
 
-    user = cursor.fetchone()
+        user = cursor.fetchone()
 
-    if not user:
-        return {"success": False}
+        if not user:
+            return {"success": False}
 
-    return {
-        "success": True,
-        "user": {
-            "id": user[0],
-            "username": user[1]
+        return {
+            "success": True,
+            "user": {
+                "id": user[0],
+                "username": user[1]
+            }
         }
-    }
-
+    finally:
+        cursor.close()
 
 class ChatRenameRequest(BaseModel):
     title: str
@@ -859,98 +798,110 @@ class ChatRenameRequest(BaseModel):
 
 @app.put("/chats/{chat_id}/rename")
 def rename_chat(chat_id: int, body: ChatRenameRequest):
-    cursor.execute(
-        "UPDATE chats SET title = ? WHERE id = ?",
-        (body.title, chat_id)
-    )
-    conn.commit()
+    cursor = get_cursor()
+    try:
+        cursor.execute(
+            "UPDATE chats SET title = %s WHERE id = %s",
+            (body.title, chat_id)
+        )
+        conn.commit()
 
-    return {"success": True}
-
+        return {"success": True}
+    finally:
+        cursor.close()
 
 @app.delete("/chats/{chat_id}")
 def delete_chat(chat_id: int):
+    cursor = get_cursor()
+    try:
+        cursor.execute(
+            "SELECT id FROM chats WHERE id = %s", (chat_id,)
+        )
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="chat not found")
 
-    cursor.execute(
-        "SELECT id FROM chats WHERE id = ?", (chat_id,)
-    )
-    if not cursor.fetchone():
-        raise HTTPException(status_code=404, detail="chat not found")
+        # ✅ 메시지 -> 채팅 순서로 명시 삭제
+        cursor.execute("DELETE FROM chat_messages WHERE chat_id = %s", (chat_id,))
+        cursor.execute("DELETE FROM chats WHERE id = %s", (chat_id,))
+        conn.commit()
 
-    # ✅ 메시지 -> 채팅 순서로 명시 삭제
-    cursor.execute("DELETE FROM chat_messages WHERE chat_id = ?", (chat_id,))
-    cursor.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
-    conn.commit()
-
-    return {"success": True}
-
+        return {"success": True}
+    finally:
+        cursor.close()
 
 @app.get("/chats/{chat_id}/files")
 def get_chat_files(chat_id: int):
-    cursor.execute("""
-        SELECT d.id, d.filename, d.path
-        FROM documents d
-        JOIN chat_files cf ON d.id = cf.file_id
-        WHERE cf.chat_id = ?
-        ORDER BY cf.created_at DESC
-    """, (chat_id,))
+    cursor = get_cursor()
+    try:
+        cursor.execute("""
+            SELECT d.id, d.filename
+            FROM documents d
+            JOIN chat_files cf ON d.id = cf.file_id
+            WHERE cf.chat_id = %s
+            ORDER BY cf.created_at DESC
+        """, (chat_id,))
 
-    files = [
-        {"id": r[0], "name": r[1], "path": r[2]}
-        for r in cursor.fetchall()
-    ]
+        files = [
+            {"id": r[0], "name": r[1], "path": r[2]}
+            for r in cursor.fetchall()
+        ]
 
-    return {"files": files}
+        return {"files": files}
+    finally:
+        cursor.close()
 
-
-### 로라 생성 api
-class LoraCreateRequest(BaseModel):
-    project_id: int
-    name: str
-    description: str        # summary / translation / qa / custom
-    base_model: str     # mistral / llama 등
+# ### 로라 생성 api
+# class LoraCreateRequest(BaseModel):
+#     project_id: int
+#     name: str
+#     description: str        # summary / translation / qa / custom
+#     base_model: str     # mistral / llama 등
 
 
 @app.post("/lora")
 def create_lora(body: LoraCreateRequest):
-    # 1) DB 저장
-    cursor.execute(
-        """
-        INSERT INTO lora_profiles (project_id, name, description, adapter_path, created_at, base_model)
-        VALUES (?, ?, ?, ?, datetime('now'), ?)
-        """,
-        (body.project_id, body.name, body.description or "", "", body.base_model),
-    )
-    conn.commit()
-    lora_id = cursor.lastrowid
+    cursor = get_cursor()
+    try:
+        # 1) DB 저장
+        cursor.execute(
+            """
+            INSERT INTO lora_profiles (project_id, name, description, adapter_path, created_at, base_model)
+            VALUES (%s, %s, %s, %s, NOW(), %s)
+            """,
+            (body.project_id, body.name, body.description or "", "", body.base_model),
+        )
+        conn.commit()
+        lora_id = cursor.lastrowid
 
-    # 2) 데이터셋 생성 경로
-    os.makedirs("data", exist_ok=True)
-    dataset_path = f"data/lora_{lora_id}.jsonl"
+        # 2) 데이터셋 생성 경로
+        os.makedirs("data", exist_ok=True)
+        dataset_path = f"data/lora_{lora_id}.jsonl"
 
-    # 3) GPT 기반 dataset 생성
-    purpose = body.description or ""
-    dataset_text = generate_chat_dataset_from_purpose(
-        purpose,
-        num_samples=30
-    )
+        # 3) GPT 기반 dataset 생성
+        purpose = body.description or ""
+        dataset_text = generate_chat_dataset_from_purpose(
+            purpose,
+            num_samples=30
+        )
 
-    # 4) JSONL 파일 저장
-    with open(dataset_path, "w", encoding="utf-8") as f:
-        f.write(dataset_text)
+        # 4) JSONL 파일 저장
+        with open(dataset_path, "w", encoding="utf-8") as f:
+            f.write(dataset_text)
 
-    # 5) 상태 업데이트
-    update_status(
-        lora_id,
-        state="created_dataset",
-        progress=10,
-        message="Chat 메시지 기반 데이터셋 생성 완료"
-    )
+        # 5) 상태 업데이트
+        update_status(
+            lora_id,
+            state="created_dataset",
+            progress=10,
+            message="Chat 메시지 기반 데이터셋 생성 완료"
+        )
 
-    return {
-        "lora_id": lora_id,
-        "dataset_path": dataset_path
-    }
+        return {
+            "lora_id": lora_id,
+            "dataset_path": dataset_path
+        }
+    finally:
+        cursor.close()
 
 ### c채팅시 로라 연결
 class CreateChatRequest(BaseModel):
@@ -959,71 +910,80 @@ class CreateChatRequest(BaseModel):
 
 @app.post("/projects/{project_id}/chats")
 def create_chat(project_id: int, body: CreateChatRequest):
-    cursor.execute(
-        """
-        INSERT INTO chats (project_id, title, lora_id, created_at)
-        VALUES (?, ?, ?, datetime('now'))
-        """,
-        (project_id, body.title, body.lora_id)
-    )
-    conn.commit()
+    cursor = get_cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO chats (project_id, title, lora_id, created_at)
+            VALUES (%s, %s, %s, NOW())
+            """,
+            (project_id, body.title, body.lora_id)
+        )
+        conn.commit()
 
-    return {"chat_id": cursor.lastrowid}
-
+        return {"chat_id": cursor.lastrowid}
+    finally:
+        cursor.close()
 
 ## 로라 학습 
 import threading
 import time
 
 def run_lora_training(lora_id: int):
+    cursor = get_cursor()
     try:
-        cursor.execute("UPDATE lora_profiles SET status='training' WHERE id=?", (lora_id,))
-        conn.commit()
+        try:
+            cursor.execute("UPDATE lora_profiles SET status='training' WHERE id=%s", (lora_id,))
+            conn.commit()
 
-        # ✅ 여기에 네 QLoRA 학습 코드가 들어가면 된다
-        # subprocess.run(["python", "train_lora.py", "--lora_id", str(lora_id)])
+            # ✅ 여기에 네 QLoRA 학습 코드가 들어가면 된다
+            # subprocess.run(["python", "train_lora.py", "--lora_id", str(lora_id)])
 
-        for i in range(10):
-            time.sleep(2)  # 학습 중인 것처럼
+            for i in range(10):
+                time.sleep(2)  # 학습 중인 것처럼
 
-        adapter_path = f"./lora_adapters/lora_{lora_id}"
+            adapter_path = f"./lora_adapters/lora_{lora_id}"
 
-        cursor.execute("""
-            UPDATE lora_profiles
-            SET status='ready', adapter_path=?
-            WHERE id=?
-        """, (adapter_path, lora_id))
+            cursor.execute("""
+                UPDATE lora_profiles
+                SET status='ready', adapter_path=%s
+                WHERE id=%s
+            """, (adapter_path, lora_id))
 
-        conn.commit()
+            conn.commit()
 
-    except:
-        cursor.execute("UPDATE lora_profiles SET status='failed' WHERE id=?", (lora_id,))
-        conn.commit()
-
+        except:
+            cursor.execute("UPDATE lora_profiles SET status='failed' WHERE id=%s", (lora_id,))
+            conn.commit()
+    finally:
+        cursor.close()
 
 ## 학습시작
 @app.post("/lora/{lora_id}/train")
 def start_lora_train(lora_id: int):
-    st = lora_train_status.get(lora_id)
+    cursor = get_cursor()
+    try:
+        st = lora_train_status.get(lora_id)
 
-    if not st:
-        return {"ok": False, "message": "LoRA 상태 없음"}
+        if not st:
+            return {"ok": False, "message": "LoRA 상태 없음"}
 
-    if st.get("state") == "running":
-        return {"ok": False, "message": "이미 학습 중"}
+        if st.get("state") == "running":
+            return {"ok": False, "message": "이미 학습 중"}
 
-    # 데이터셋 체크
-    dataset_path = f"data/lora_{lora_id}.jsonl"
-    if not os.path.exists(dataset_path):
-        return {"ok": False, "message": "데이터셋이 없어 학습 불가"}
+        # 데이터셋 체크
+        dataset_path = f"data/lora_{lora_id}.jsonl"
+        if not os.path.exists(dataset_path):
+            return {"ok": False, "message": "데이터셋이 없어 학습 불가"}
 
-    t = threading.Thread(target=train_mistral_lora, args=(lora_id,), daemon=True)
-    t.start()
+        t = threading.Thread(target=train_mistral_lora, args=(lora_id,), daemon=True)
+        t.start()
 
-    update_status(lora_id, "running", 20, "학습 준비 중...")
+        update_status(lora_id, "running", 20, "학습 준비 중...")
 
-    return {"ok": True, "message": "학습을 시작했습니다."}
-
+        return {"ok": True, "message": "학습을 시작했습니다."}
+    finally:
+        cursor.close()
 
 def update_status(lora_id, state, progress, message, adapter_path=None):
     # 기존 상태가 있으면 가져오고, 없으면 기본 상태로 초기화
@@ -1049,103 +1009,106 @@ def update_status(lora_id, state, progress, message, adapter_path=None):
 
 ## QLoRa 학습함수
 def train_mistral_lora(lora_id: int):
+    cursor = get_cursor()
     try:
-        update_status(lora_id, "preparing", 20, "데이터셋 로드 중...")
+        try:
+            update_status(lora_id, "preparing", 20, "데이터셋 로드 중...")
 
-        # 1) 데이터셋 로드
-        dataset_path = f"data/lora_{lora_id}.jsonl"
-        raw_dataset = load_dataset("json", data_files=dataset_path)["train"]
+            # 1) 데이터셋 로드
+            dataset_path = f"data/lora_{lora_id}.jsonl"
+            raw_dataset = load_dataset("json", data_files=dataset_path)["train"]
 
-        update_status(lora_id, "preparing", 30, f"데이터셋 {len(raw_dataset)}개 로드 완료")
+            update_status(lora_id, "preparing", 30, f"데이터셋 {len(raw_dataset)}개 로드 완료")
 
-        # 2) 모델 로드
-        cursor.execute("SELECT base_model FROM lora_profiles WHERE id=?", (lora_id,))
-        base_model = cursor.fetchone()[0]
+            # 2) 모델 로드
+            cursor.execute("SELECT base_model FROM lora_profiles WHERE id=%s", (lora_id,))
+            base_model = cursor.fetchone()[0]
 
-        update_status(lora_id, "preparing", 40, "토크나이저/모델 로드 중...")
+            update_status(lora_id, "preparing", 40, "토크나이저/모델 로드 중...")
 
-        tokenizer = AutoTokenizer.from_pretrained(base_model)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer = AutoTokenizer.from_pretrained(base_model)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
 
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model,
-            torch_dtype=torch.float16,
-            device_map="auto"
-        )
-
-
-    
-        update_status(lora_id, "preparing", 55, "LoRA 구성 중...")
-
-        # 3) LoRA 적용
-        lora_config = LoraConfig(
-            r=16,
-            lora_alpha=32,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-            lora_dropout=0.05,
-            bias="none",
-            task_type="CAUSAL_LM",
-        )
-        model = get_peft_model(model, lora_config)
-
-        # 4) 토큰화
-        update_status(lora_id, "preparing", 65, "토큰화 진행 중...")
-
-        def format_example(example):
-            text = tokenizer.apply_chat_template(
-            example["messages"], 
-            tokenize=False, 
-            add_generation_prompt=False
-        )
-
-            tokenized = tokenizer(
-                text,
-                truncation=True,
-                max_length=1024,
-                padding="max_length",
+            model = AutoModelForCausalLM.from_pretrained(
+                base_model,
+                torch_dtype=torch.float16,
+                device_map="auto"
             )
-            tokenized["labels"] = tokenized["input_ids"].copy()
-            return tokenized
 
-        tokenized_dataset = raw_dataset.map(format_example, remove_columns=raw_dataset.column_names)
 
-        # 5) 학습
-        update_status(lora_id, "running", 70, "학습 시작")
+        
+            update_status(lora_id, "preparing", 55, "LoRA 구성 중...")
 
-        output_dir = f"lora_adapters/lora_{lora_id}"
-        os.makedirs(output_dir, exist_ok=True)
+            # 3) LoRA 적용
+            lora_config = LoraConfig(
+                r=16,
+                lora_alpha=32,
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+                lora_dropout=0.05,
+                bias="none",
+                task_type="CAUSAL_LM",
+            )
+            model = get_peft_model(model, lora_config)
 
-        training_args = TrainingArguments(
-            output_dir=output_dir,
-            per_device_train_batch_size=1,
-            gradient_accumulation_steps=8,
-            learning_rate=2e-4,
-            num_train_epochs=3,
-            logging_steps=10,
-            save_strategy="epoch",
-            fp16=True,
-            report_to=[],
-        )
+            # 4) 토큰화
+            update_status(lora_id, "preparing", 65, "토큰화 진행 중...")
 
-        trainer = Trainer(model=model, args=training_args, train_dataset=tokenized_dataset)
-        trainer.train()
+            def format_example(example):
+                text = tokenizer.apply_chat_template(
+                example["messages"], 
+                tokenize=False, 
+                add_generation_prompt=False
+            )
 
-        update_status(lora_id, "saving", 90, "어댑터 저장 중...")
-        model.save_pretrained(output_dir)
+                tokenized = tokenizer(
+                    text,
+                    truncation=True,
+                    max_length=1024,
+                    padding="max_length",
+                )
+                tokenized["labels"] = tokenized["input_ids"].copy()
+                return tokenized
 
-        # DB 업데이트
-        cursor.execute(
-            "UPDATE lora_profiles SET adapter_path=?, created_at=datetime('now') WHERE id=?",
-            (output_dir, lora_id),
-        )
-        conn.commit()
+            tokenized_dataset = raw_dataset.map(format_example, remove_columns=raw_dataset.column_names)
 
-        update_status(lora_id, "done", 100, "학습 완료")
+            # 5) 학습
+            update_status(lora_id, "running", 70, "학습 시작")
 
-    except Exception as e:
-        update_status(lora_id, "error", 0, f"에러: {repr(e)}")
+            output_dir = f"lora_adapters/lora_{lora_id}"
+            os.makedirs(output_dir, exist_ok=True)
 
+            training_args = TrainingArguments(
+                output_dir=output_dir,
+                per_device_train_batch_size=1,
+                gradient_accumulation_steps=8,
+                learning_rate=2e-4,
+                num_train_epochs=3,
+                logging_steps=10,
+                save_strategy="epoch",
+                fp16=True,
+                report_to=[],
+            )
+
+            trainer = Trainer(model=model, args=training_args, train_dataset=tokenized_dataset)
+            trainer.train()
+
+            update_status(lora_id, "saving", 90, "어댑터 저장 중...")
+            model.save_pretrained(output_dir)
+
+            # DB 업데이트
+            cursor.execute(
+                "UPDATE lora_profiles SET adapter_path=%s, created_at=NOW() WHERE id=%s",
+                (output_dir, lora_id),
+            )
+            conn.commit()
+
+            update_status(lora_id, "done", 100, "학습 완료")
+
+        except Exception as e:
+            update_status(lora_id, "error", 0, f"에러: {repr(e)}")
+    finally:
+        cursor.close()
 
 # ============================================================
 # [LoRA 관리 API]
@@ -1156,7 +1119,7 @@ def train_mistral_lora(lora_id: int):
 #     cursor.execute(
 #         """
 #         INSERT INTO lora_profiles (project_id, name, description, adapter_path, created_at, base_model)
-#         VALUES (?, ?, ?, ?, datetime('now'), ?)
+#         VALUES (%s, %s, %s, %s, datetime('now'), %s)
 #         """,
 #         (body.project_id, body.name, body.description or "", "", body.base_model),
 #     )
@@ -1176,102 +1139,101 @@ def train_mistral_lora(lora_id: int):
 
 @app.get("/lora/{lora_id}/status", response_model=LoraStatusResponse)
 def get_lora_status(lora_id: int):
-    st = lora_train_status.get(lora_id, {
-        "state": "unknown",
-        "progress": 0,
-        "message": "상태 정보 없음",
-        "adapter_path": None,
-    })
+    cursor = get_cursor()
+    try:
+        st = lora_train_status.get(lora_id, {
+            "state": "unknown",
+            "progress": 0,
+            "message": "상태 정보 없음",
+            "adapter_path": None,
+        })
 
-    cursor.execute("SELECT adapter_path FROM lora_profiles WHERE id=?", (lora_id,))
-    row = cursor.fetchone()
-    adapter_path = row[0] if row else None
+        cursor.execute("SELECT adapter_path FROM lora_profiles WHERE id=%s", (lora_id,))
+        row = cursor.fetchone()
+        adapter_path = row[0] if row else None
 
-    return LoraStatusResponse(
-        lora_id=lora_id,
-        state=st["state"],
-        progress=st["progress"],
-        message=st["message"],
-        adapter_path=adapter_path,
-    )
-
-
-    cursor.execute(
-        "SELECT adapter_path FROM lora_profiles WHERE id = ?",
-        (lora_id,),
-    )
-    row = cursor.fetchone()
-    adapter_path = row[0] if row else None
-
-    return LoraStatusResponse(
-        lora_id=lora_id,
-        state=st["state"],
-        progress=st["progress"],
-        message=st["message"],
-        adapter_path=adapter_path,
-    )
-
+        return LoraStatusResponse(
+            lora_id=lora_id,
+            state=st["state"],
+            progress=st["progress"],
+            message=st["message"],
+            adapter_path=adapter_path,
+        )
+        
+    finally:
+        cursor.close()
 
 @app.get("/admin/users")
 def list_all_users():
-    cursor.execute("SELECT id, username, email FROM users ORDER BY id DESC")
-    rows = cursor.fetchall()
+    cursor = get_cursor()
+    try:
+            
+        cursor.execute("SELECT id, username FROM users")
+        rows = cursor.fetchall()
 
-    return {
-        "users": [
-            {"id": r[0], "username": r[1], "email": r[2]}
-            for r in rows
-        ]
-    }
-
+        return {
+            "users": [
+                {"id": r[0], "username": r[1]}
+                for r in rows
+            ]
+        }
+    finally:
+        cursor.close()
+    
 @app.get("/lora/list")
 def list_lora(project_id: int):
-    cursor.execute("""
-        SELECT id, name, description, status, adapter_path
-        FROM lora_profiles
-        WHERE project_id = ?
-        ORDER BY id DESC
-    """, (project_id,))
+    cursor = get_cursor()
+    try:
+        cursor.execute("""
+            SELECT id, name, description, status, adapter_path
+            FROM lora_profiles
+            WHERE project_id = %s
+            ORDER BY id DESC
+        """, (project_id,))
 
-    rows = cursor.fetchall()
+        rows = cursor.fetchall()
 
-    return {
-        "loras": [
-            {
-                "id": r[0],
-                "name": r[1],
-                "description": r[2],
-                "status": r[3],
-                "adapter_path": r[4],
-            }
-            for r in rows
-        ]
-    }
-
+        return {
+            "loras": [
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "description": r[2],
+                    "status": r[3],
+                    "adapter_path": r[4],
+                }
+                for r in rows
+            ]
+        }
+    finally:
+        cursor.close()
 
 @app.get("/lora/{lora_id}/dataset")
 def preview_lora_dataset(lora_id: int, limit: int = 5):
-    dataset_path = f"data/lora_{lora_id}.jsonl"
+    cursor = get_cursor()
+    try:
+        dataset_path = f"data/lora_{lora_id}.jsonl"
 
-    if not os.path.exists(dataset_path):
-        return {"ok": False, "message": "데이터셋 없음"}
+        if not os.path.exists(dataset_path):
+            return {"ok": False, "message": "데이터셋 없음"}
 
-    preview = []
-    with open(dataset_path, "r", encoding="utf-8") as f:
-        for i, line in enumerate(f):
-            if i >= limit:
-                break
-            preview.append(json.loads(line))
+        preview = []
+        with open(dataset_path, "r", encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i >= limit:
+                    break
+                preview.append(json.loads(line))
 
-    total = sum(1 for _ in open(dataset_path, "r", encoding="utf-8"))
+        total = sum(1 for _ in open(dataset_path, "r", encoding="utf-8"))
 
-    return {
-        "ok": True,
-        "dataset_path": dataset_path,
-        "total_samples": total,
-        "preview": preview,
-    }
-
+        return {
+            "ok": True,
+            "dataset_path": dataset_path,
+            "total_samples": total,
+            "preview": preview,
+        }
+    finally:
+        cursor.close()
 ##GPT API를 호출해서 LoRA 학습용 messages[] dataset을 만드는 코드
 def generate_chat_dataset_from_purpose(purpose: str, num_samples: int = 30):
     prompt = f"""
