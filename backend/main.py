@@ -56,16 +56,28 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # [3] SQLite DB 설정
 # ============================================================
 
+db_host = os.getenv("DB_HOST")
+db_user = os.getenv("DB_USER")
+db_password = os.getenv("DB_PASSWORD")
+db_name = os.getenv("DB_NAME")
+db_ssl_ca = os.getenv("DB_SSL_CA")
+
 conn = pymysql.connect(
-    host="localhost",
-    user=os.getenv("DB_USER"),
-    password=os.getenv("DB_PASSWORD"),
-    database=os.getenv("DB_NAME"),
+    host=db_host,
+    user=db_user,
+    password=db_password,
+    database=db_name,
+    port=3306,
+    ssl={"ca": db_ssl_ca},
+    # cursorclass=pymysql.cursors.DictCursor,  # 결과를 dict로 받기
     charset="utf8mb4",
     autocommit=True,
-    cursorclass=pymysql.cursors.Cursor
 )
+
+print("✅ MySQL 데이터베이스 연결 성공")
+
 init_db(conn)
+
 def get_cursor():
     return conn.cursor()
 
@@ -121,8 +133,6 @@ def load_db_to_faiss():
 # 서버 시작 시 DB → FAISS 로드
 load_db_to_faiss()
 
-
-
 # ============================================================
 # [X] LoRA 학습 상태 전역 관리
 # ============================================================
@@ -174,7 +184,6 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/signup")
-
 def signup(body: SignUpRequest):
     cursor = get_cursor()
     try:
@@ -716,7 +725,7 @@ async def list_chats(project_id: int):
         }
     finally:
         cursor.close()
-# 
+
 @app.get("/chats/{chat_id}")
 async def get_chat_history(chat_id: int):
     cursor = get_cursor()
@@ -772,29 +781,43 @@ async def login(data: Dict[str, str]):
         username = data["username"]
         password = data["password"]
 
+        # 1) 사용자명으로 먼저 조회
         cursor.execute(
-            "SELECT id, username FROM users WHERE username=%s AND password=%s",
-            (username, password)
+            "SELECT id, username, password FROM users WHERE username=%s",
+            (username,)
         )
-
         user = cursor.fetchone()
 
+        # 디버그 로그
+        print(f"[로그인 시도] username: {username}")
+        
         if not user:
-            return {"success": False}
+            print(f"[로그인 실패] 사용자 '{username}'이 DB에 없음")
+            return {"success": False, "message": "사용자를 찾을 수 없습니다"}
 
+        user_id, db_username, db_password = user[0], user[1], user[2]
+        
+        # 2) 비밀번호 확인
+        if db_password != password:
+            print(f"[로그인 실패] 비밀번호 불일치 (입력: {password}, DB: {db_password})")
+            return {"success": False, "message": "비밀번호가 일치하지 않습니다"}
+
+        print(f"[로그인 성공] user_id: {user_id}, username: {db_username}")
         return {
             "success": True,
             "user": {
-                "id": user[0],
-                "username": user[1]
+                "id": user_id,
+                "username": db_username
             }
         }
+    except Exception as e:
+        print(f"[로그인 에러] {str(e)}")
+        return {"success": False, "message": f"로그인 중 오류: {str(e)}"}
     finally:
         cursor.close()
 
 class ChatRenameRequest(BaseModel):
     title: str
-
 
 @app.put("/chats/{chat_id}/rename")
 def rename_chat(chat_id: int, body: ChatRenameRequest):

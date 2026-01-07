@@ -14,7 +14,9 @@ conn = pymysql.connect(
     database=db_name,
     port=3306,
     ssl={"ca": db_ssl_ca},
-    cursorclass=pymysql.cursors.DictCursor  # 결과를 dict로 받기
+    cursorclass=pymysql.cursors.DictCursor,  # 결과를 dict로 받기
+    charset="utf8mb4",
+    autocommit=True,
 )
 
 try:
@@ -25,6 +27,13 @@ try:
         print("테이블 목록:")
         for t in tables:
             print(t)
+
+        cursor.execute("SELECT * from users;")
+        users = cursor.fetchall()
+        print("\nusers 테이블 데이터:")
+        for user in users:
+            print(user)
+            
 
     print("\n연결 성공!")
 

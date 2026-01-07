@@ -6,6 +6,7 @@
 venv/
 __pycache__/
 *.pyc
+test/
 
 # PyTorch / LoRA
 backend/lora_adapters/
@@ -20,7 +21,7 @@ wandb/
 .faiss
 
 # Node / JS
-/node_modules
+my-chatbot-ui/node_modules
 /.pnp
 .pnp.*
 .yarn/
@@ -30,9 +31,9 @@ wandb/
 !.yarn/versions
 
 # Next.js / build outputs
-/.next/
-/out/
-/build/
+my-chatbot-ui/.next/
+my-chatbot-ui/out/
+my-chatbot-ui/build/
 
 # Testing
 /coverage
@@ -41,6 +42,7 @@ wandb/
 .DS_Store
 Thumbs.db
 *.pem
+backend/DigiCertGlobalRootG2.crt.pem
 DigiCertGlobalRootG2.crt.pem
 
 # Debug logs
