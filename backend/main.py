@@ -34,12 +34,13 @@ from datasets import load_dataset
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 개발용
+    allow_origins=[
+        "https://my-frontend-web.azurewebsites.net"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # ============================================================
 # [1] 환경 변수 & OpenAI
 # ============================================================
