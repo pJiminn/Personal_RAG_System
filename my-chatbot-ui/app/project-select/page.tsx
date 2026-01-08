@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 
 export default function ProjectSelectPage() {
   const router = useRouter();
-  const backend = "http://localhost:8000";
+  const backend = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
   const [user, setUser] = useState<any>(null);
   const [projects, setProjects] = useState<any[]>([]);

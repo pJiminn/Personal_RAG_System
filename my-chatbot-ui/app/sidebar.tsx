@@ -12,7 +12,7 @@ export default function Sidebar({
   setChatHistory,
   projectRefreshKey,
 }: any) {
-  const backend = "http://localhost:8000";
+  const backend = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   
   const router = useRouter();
 

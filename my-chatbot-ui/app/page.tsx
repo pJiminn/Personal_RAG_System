@@ -9,7 +9,7 @@ import styles from "./ui.module.css";
 
 export default function Home() {
   const router = useRouter();
-  const backend = "http://localhost:8000";
+  const backend = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
   // ======================================================
   // 1) 모든 상태는 최상단에 선언해야 함 !!

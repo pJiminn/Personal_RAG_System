@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 
 export default function ChatPage() {
-  const backend = "http://localhost:8000";
+  const backend = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   const [messages, setMessages] = useState<{ role: string; content: string }[]>([]);
   const [input, setInput] = useState("");
   const [projectId, setProjectId] = useState<number | null>(null);
