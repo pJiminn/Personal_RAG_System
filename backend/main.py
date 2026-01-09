@@ -32,11 +32,15 @@ from datasets import load_dataset
 # [0] FastAPI & CORS
 # ============================================================
 app = FastAPI()
+
+origins = [
+    "https://esdl-personal-rag-system-frontend.azurewebsites.net",
+    "http://localhost:3000", # 로컬 테스트용
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://my-frontend-web.azurewebsites.net"
-    ],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
