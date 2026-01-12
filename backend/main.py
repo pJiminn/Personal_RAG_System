@@ -518,18 +518,17 @@ class LoraStatusResponse(BaseModel):
 
 @app.post("/chat_stream")
 async def chat_stream(request: ChatStreamRequest):
+    # 1. 초기 연결 및 데이터 확보
     cursor = get_cursor()
     try:
-
         query = request.query
         project_id = request.project_id
         chat_id = request.chat_id
 
-        # OpenAI API 키 확인
         if not os.getenv("OPENAI_API_KEY"):
-            raise HTTPException(status_code=500, detail="OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.")
+            raise HTTPException(status_code=500, detail="API 키가 없습니다.")
 
-        # 채팅방 없으면 자동 생성
+        # 2. 채팅방 자동 생성 (없을 경우)
         if chat_id is None:
             cursor.execute(
                 "INSERT INTO chats (project_id, title, created_at) VALUES (%s, %s, NOW())",
@@ -538,86 +537,59 @@ async def chat_stream(request: ChatStreamRequest):
             conn.commit()
             chat_id = cursor.lastrowid
 
-        # 유저 메시지 저장
+        # 3. 유저 메시지 저장
         cursor.execute(
             "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (%s, %s, %s, NOW())",
             (chat_id, "user", query),
         )
         conn.commit()
 
-        # ✅ LoRA 연결 여부 확인
-        cursor.execute("SELECT lora_id FROM chats WHERE id = %s", (chat_id,))
-        row = cursor.fetchone()
-        lora_id = row[0] if row else None
-
-        adapter_path = None
-        if lora_id:
-            cursor.execute("SELECT adapter_path FROM lora_profiles WHERE id = %s", (lora_id,))
-            r2 = cursor.fetchone()
-            adapter_path = r2[0] if r2 else None
-            # 지금은 adapter_path만 읽어오고, 실제 추론은 OpenAI로.
-            # 나중에 로컬 Mistral+LoRA 서버를 붙이면 여기서 분기.
-
-        # 프로젝트별 FAISS 인덱스
+        # 4. RAG 컨텍스트 준비 (FAISS)
         idx, docs = get_or_create_index(project_id)
-
         context = ""
         if idx.ntotal > 0:
+            emb = get_embedding(query).reshape(1, -1)
+            k = min(3, len(docs))
+            D, I = idx.search(emb, k)
+            context = "\n".join([docs[i] for i in I[0] if i < len(docs)])
+
+        full_prompt = f"문서:\n{context}\n\n질문: {query}"
+
+        # 5. Generator 함수 정의 (비동기 스트리밍 내부용)
+        # 중요: chat_id를 내부에서 안전하게 사용하기 위해 인자로 넘기거나 스코프를 유지합니다.
+        def generate(target_chat_id, final_prompt):
+            completion = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": final_prompt}],
+                stream=True,
+            )
+
+            answer = ""
+            for chunk in completion:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    token = chunk.choices[0].delta.content
+                    answer += token
+                    yield token
+
+            # 스트리밍 종료 후 DB 저장
+            c2 = get_cursor()
             try:
-                emb = get_embedding(query).reshape(1, -1)
-                k = min(3, len(docs))
-                D, I = idx.search(emb, k)
-                context = "\n".join([docs[i] for i in I[0] if i < len(docs)])
-            except Exception as e:
-                print(f"임베딩 검색 에러: {e}")
-                context = ""
-
-        prompt = f"""
-아래 문서 기반으로만 답하시오.
-문서에 없는 내용이면 "모르겠습니다"라고 대답하십시오.
-만약 정보에 관한 대화가 아닌 일상 대화라면, 친구처럼 대답하세요.
-
-문서:
-{context}
-
-질문: {query}
-"""
-    finally:
-        cursor.close()
-
-        def generate():
-                completion = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    stream=True,
+                c2.execute(
+                    "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (%s, %s, %s, NOW())",
+                    (target_chat_id, "assistant", answer),
                 )
+                conn.commit()
+            finally:
+                c2.close()
 
-                answer = ""
+        return StreamingResponse(generate(chat_id, full_prompt), media_type="text/plain")
 
-                for chunk in completion:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        token = chunk.choices[0].delta.content
-                        answer += token
-                        yield token
-                cursor2 = get_cursor()
-                try:
-                    cursor2.execute(
-                        "INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (%s, %s, %s, NOW())",
-                        (chat_id, "assistant", answer),
-                    )
-                    conn.commit()
-                finally:
-                    cursor2.close()
-
-                return StreamingResponse(generate(), media_type="text/plain")
-    
-    # except HTTPException:
-    #     raise
-    # except Exception as e:
-    #     import traceback
-    #     error_detail = f"서버 에러: {str(e)}\n{traceback.format_exc()}"
-    #     print(error_detail)
-    #     raise HTTPException(status_code=500, detail=f"채팅 처리 중 에러 발생: {str(e)}")
+    except Exception as e:
+        print(f"Error in chat_stream: {e}")
+        return {"error": str(e)}
+    finally:
+        # 처음 생성한 커서는 여기서 닫아줍니다.
+        cursor.close()
     
 
 
