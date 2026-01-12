@@ -554,6 +554,7 @@ async def chat_stream(request: ChatStreamRequest):
             context = "\n".join([docs[i] for i in I[0] if i < len(docs)])
 
         full_prompt = f"문서:\n{context}\n\n질문: {query}"
+        print(f"[RAG Prompt]\n{full_prompt}\n{'-'*30}")
 
         # 5. Generator 함수 정의 (비동기 스트리밍 내부용)
         # 중요: chat_id를 내부에서 안전하게 사용하기 위해 인자로 넘기거나 스코프를 유지합니다.

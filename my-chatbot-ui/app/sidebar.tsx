@@ -232,6 +232,7 @@ export default function Sidebar({
               marginTop: "4px",
               borderRadius: "4px",
               background: "#eee",
+              color: "black",
             }}
           >
             📄 {f.filename}
