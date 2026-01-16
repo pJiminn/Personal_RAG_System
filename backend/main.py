@@ -27,6 +27,11 @@ from typing import Any
 # from peft import LoraConfig, get_peft_model
 # from datasets import load_dataset
 
+from azure.ai.ml import MLClient, command, Input
+from azure.identity import DefaultAzureCredential
+from azure.ai.ml.entities import Data
+from azure.ai.ml.constants import AssetTypes
+from azure.storage.blob import BlobServiceClient
 
 # ============================================================
 # [0] FastAPI & CORS
@@ -139,12 +144,6 @@ def load_db_to_faiss():
 load_db_to_faiss()
 
 # ============================================================
-# [X] LoRA 학습 상태 전역 관리
-# ============================================================
-lora_train_status: Dict[int, Dict[str, Any]] = {}
-
-
-# ============================================================
 # [5] 유틸: PDF → 텍스트, 텍스트 → 임베딩, 청크
 # ============================================================
 def pdf_to_text(file_path: str) -> str:
@@ -212,6 +211,22 @@ def signup(body: SignUpRequest):
 #         raise HTTPException(status_code=401, detail="invalid credentials")
 #     return {"user_id": row[0], "username": body.username}
 
+@app.get("/admin/users")
+def list_all_users():
+    cursor = get_cursor()
+    try:
+            
+        cursor.execute("SELECT id, username FROM users")
+        rows = cursor.fetchall()
+
+        return {
+            "users": [
+                {"id": r[0], "username": r[1]}
+                for r in rows
+            ]
+        }
+    finally:
+        cursor.close()
 
 # ============================================================
 # [7] 프로젝트 CRUD
@@ -874,511 +889,190 @@ def get_chat_files(chat_id: int):
         cursor.close()
 
 
+# ============================================================
+# [X] LoRA 학습 상태 전역 관리
+# ============================================================
+lora_train_status: Dict[int, Dict[str, Any]] = {}
 
-
+# ============================================================
+# [] LoRA 관련 API (deprecated)
+# ============================================================
 
 ############ 애저 올릴려고 stub응답 처리 
-@app.post("/lora")
-def create_lora(body: LoraCreateRequest):
-    raise HTTPException(
-        status_code=403,
-        detail="LoRA 기능은 현재 배포 환경에서 비활성화되어 있습니다."
-    )
-@app.post("/lora/{lora_id}/train")
-def start_lora_train(lora_id: int):
-    raise HTTPException(
-        status_code=403,
-        detail="LoRA 학습은 GPU 환경에서만 가능합니다."
-    )
-@app.get("/lora/{lora_id}/status", response_model=LoraStatusResponse)
-def get_lora_status(lora_id: int):
-    return LoraStatusResponse(
-        lora_id=lora_id,
-        state="disabled",
-        progress=0,
-        message="LoRA 기능이 비활성화된 배포 환경입니다.",
-        adapter_path=None,
-    )
-
-
-
-
-
-# ### 로라 생성 api
-# class LoraCreateRequest(BaseModel):
-#     project_id: int
-#     name: str
-#     description: str        # summary / translation / qa / custom
-#     base_model: str     # mistral / llama 등
-
-
 # @app.post("/lora")
 # def create_lora(body: LoraCreateRequest):
-#     cursor = get_cursor()
-#     try:
-#         # 1) DB 저장
-#         cursor.execute(
-#             """
-#             INSERT INTO lora_profiles (project_id, name, description, adapter_path, created_at, base_model)
-#             VALUES (%s, %s, %s, %s, NOW(), %s)
-#             """,
-#             (body.project_id, body.name, body.description or "", "", body.base_model),
-#         )
-#         conn.commit()
-#         lora_id = cursor.lastrowid
-
-#         # 2) 데이터셋 생성 경로
-#         os.makedirs("data", exist_ok=True)
-#         dataset_path = f"data/lora_{lora_id}.jsonl"
-
-#         # 3) GPT 기반 dataset 생성
-#         purpose = body.description or ""
-#         dataset_text = generate_chat_dataset_from_purpose(
-#             purpose,
-#             num_samples=30
-#         )
-
-#         # 4) JSONL 파일 저장
-#         with open(dataset_path, "w", encoding="utf-8") as f:
-#             f.write(dataset_text)
-
-#         # 5) 상태 업데이트
-#         update_status(
-#             lora_id,
-#             state="created_dataset",
-#             progress=10,
-#             message="Chat 메시지 기반 데이터셋 생성 완료"
-#         )
-
-#         return {
-#             "lora_id": lora_id,
-#             "dataset_path": dataset_path
-#         }
-#     finally:
-#         cursor.close()
-
-# ### c채팅시 로라 연결
-# class CreateChatRequest(BaseModel):
-#     title: str
-#     lora_id: Optional[int] = None
-
-# @app.post("/projects/{project_id}/chats")
-# def create_chat(project_id: int, body: CreateChatRequest):
-#     cursor = get_cursor()
-#     try:
-#         cursor.execute(
-#             """
-#             INSERT INTO chats (project_id, title, lora_id, created_at)
-#             VALUES (%s, %s, %s, NOW())
-#             """,
-#             (project_id, body.title, body.lora_id)
-#         )
-#         conn.commit()
-
-#         return {"chat_id": cursor.lastrowid}
-#     finally:
-#         cursor.close()
-
-# ## 로라 학습 
-# import threading
-# import time
-
-# def run_lora_training(lora_id: int):
-#     cursor = get_cursor()
-#     try:
-#         try:
-#             cursor.execute("UPDATE lora_profiles SET status='training' WHERE id=%s", (lora_id,))
-#             conn.commit()
-
-#             # ✅ 여기에 네 QLoRA 학습 코드가 들어가면 된다
-#             # subprocess.run(["python", "train_lora.py", "--lora_id", str(lora_id)])
-
-#             for i in range(10):
-#                 time.sleep(2)  # 학습 중인 것처럼
-
-#             adapter_path = f"./lora_adapters/lora_{lora_id}"
-
-#             cursor.execute("""
-#                 UPDATE lora_profiles
-#                 SET status='ready', adapter_path=%s
-#                 WHERE id=%s
-#             """, (adapter_path, lora_id))
-
-#             conn.commit()
-
-#         except:
-#             cursor.execute("UPDATE lora_profiles SET status='failed' WHERE id=%s", (lora_id,))
-#             conn.commit()
-#     finally:
-#         cursor.close()
-
-# ## 학습시작
+#     raise HTTPException(
+#         status_code=403,
+#         detail="LoRA 기능은 현재 배포 환경에서 비활성화되어 있습니다."
+#     )
 # @app.post("/lora/{lora_id}/train")
 # def start_lora_train(lora_id: int):
-#     cursor = get_cursor()
-#     try:
-#         st = lora_train_status.get(lora_id)
-
-#         if not st:
-#             return {"ok": False, "message": "LoRA 상태 없음"}
-
-#         if st.get("state") == "running":
-#             return {"ok": False, "message": "이미 학습 중"}
-
-#         # 데이터셋 체크
-#         dataset_path = f"data/lora_{lora_id}.jsonl"
-#         if not os.path.exists(dataset_path):
-#             return {"ok": False, "message": "데이터셋이 없어 학습 불가"}
-
-#         t = threading.Thread(target=train_mistral_lora, args=(lora_id,), daemon=True)
-#         t.start()
-
-#         update_status(lora_id, "running", 20, "학습 준비 중...")
-
-#         return {"ok": True, "message": "학습을 시작했습니다."}
-#     finally:
-#         cursor.close()
-
-# def update_status(lora_id, state, progress, message, adapter_path=None):
-#     # 기존 상태가 있으면 가져오고, 없으면 기본 상태로 초기화
-#     prev = lora_train_status.get(lora_id, {
-#         "state": "created",
-#         "progress": 0,
-#         "message": "",
-#         "adapter_path": None,
-#     })
-
-#     # 업데이트
-#     lora_train_status[lora_id] = {
-#         "state": state,
-#         "progress": progress,
-#         "message": message,
-#         "adapter_path": adapter_path or prev["adapter_path"]
-#     }
-
-#     # 터미널 디버그용
-#     print(f"[LoRA {lora_id}] {state} | {progress}% | {message}")
-
-
-
-# ## QLoRa 학습함수
-# def train_mistral_lora(lora_id: int):
-#     cursor = get_cursor()
-#     try:
-#         try:
-#             update_status(lora_id, "preparing", 20, "데이터셋 로드 중...")
-
-#             # 1) 데이터셋 로드
-#             dataset_path = f"data/lora_{lora_id}.jsonl"
-#             raw_dataset = load_dataset("json", data_files=dataset_path)["train"]
-
-#             update_status(lora_id, "preparing", 30, f"데이터셋 {len(raw_dataset)}개 로드 완료")
-
-#             # 2) 모델 로드
-#             cursor.execute("SELECT base_model FROM lora_profiles WHERE id=%s", (lora_id,))
-#             base_model = cursor.fetchone()[0]
-
-#             update_status(lora_id, "preparing", 40, "토크나이저/모델 로드 중...")
-
-#             tokenizer = AutoTokenizer.from_pretrained(base_model)
-#             if tokenizer.pad_token is None:
-#                 tokenizer.pad_token = tokenizer.eos_token
-
-#             model = AutoModelForCausalLM.from_pretrained(
-#                 base_model,
-#                 torch_dtype=torch.float16,
-#                 device_map="auto"
-#             )
-
-
-        
-#             update_status(lora_id, "preparing", 55, "LoRA 구성 중...")
-
-#             # 3) LoRA 적용
-#             lora_config = LoraConfig(
-#                 r=16,
-#                 lora_alpha=32,
-#                 target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-#                 lora_dropout=0.05,
-#                 bias="none",
-#                 task_type="CAUSAL_LM",
-#             )
-#             model = get_peft_model(model, lora_config)
-
-#             # 4) 토큰화
-#             update_status(lora_id, "preparing", 65, "토큰화 진행 중...")
-
-#             def format_example(example):
-#                 text = tokenizer.apply_chat_template(
-#                 example["messages"], 
-#                 tokenize=False, 
-#                 add_generation_prompt=False
-#             )
-
-#                 tokenized = tokenizer(
-#                     text,
-#                     truncation=True,
-#                     max_length=1024,
-#                     padding="max_length",
-#                 )
-#                 tokenized["labels"] = tokenized["input_ids"].copy()
-#                 return tokenized
-
-#             tokenized_dataset = raw_dataset.map(format_example, remove_columns=raw_dataset.column_names)
-
-#             # 5) 학습
-#             update_status(lora_id, "running", 70, "학습 시작")
-
-#             output_dir = f"lora_adapters/lora_{lora_id}"
-#             os.makedirs(output_dir, exist_ok=True)
-
-#             training_args = TrainingArguments(
-#                 output_dir=output_dir,
-#                 per_device_train_batch_size=1,
-#                 gradient_accumulation_steps=8,
-#                 learning_rate=2e-4,
-#                 num_train_epochs=3,
-#                 logging_steps=10,
-#                 save_strategy="epoch",
-#                 fp16=True,
-#                 report_to=[],
-#             )
-
-#             trainer = Trainer(model=model, args=training_args, train_dataset=tokenized_dataset)
-#             trainer.train()
-
-#             update_status(lora_id, "saving", 90, "어댑터 저장 중...")
-#             model.save_pretrained(output_dir)
-
-#             # DB 업데이트
-#             cursor.execute(
-#                 "UPDATE lora_profiles SET adapter_path=%s, created_at=NOW() WHERE id=%s",
-#                 (output_dir, lora_id),
-#             )
-#             conn.commit()
-
-#             update_status(lora_id, "done", 100, "학습 완료")
-
-#         except Exception as e:
-#             update_status(lora_id, "error", 0, f"에러: {repr(e)}")
-#     finally:
-#         cursor.close()
-
-# # ============================================================
-# # [LoRA 관리 API]
-# # ============================================================
-
-# # @app.post("/lora")
-# # def create_lora(body: LoraCreateRequest):
-# #     cursor.execute(
-# #         """
-# #         INSERT INTO lora_profiles (project_id, name, description, adapter_path, created_at, base_model)
-# #         VALUES (%s, %s, %s, %s, datetime('now'), %s)
-# #         """,
-# #         (body.project_id, body.name, body.description or "", "", body.base_model),
-# #     )
-# #     conn.commit()
-# #     lora_id = cursor.lastrowid
-
-#     # 상태 초기화
-#     lora_train_status[lora_id] = {
-#         "state": "created",
-#         "progress": 0,
-#         "message": "생성됨(학습 전)",
-#         "adapter_path": None,
-#     }
-
-#     return {"lora_id": lora_id}
-
-
+#     raise HTTPException(
+#         status_code=403,
+#         detail="LoRA 학습은 GPU 환경에서만 가능합니다."
+#     )
 # @app.get("/lora/{lora_id}/status", response_model=LoraStatusResponse)
 # def get_lora_status(lora_id: int):
-#     cursor = get_cursor()
-#     try:
-#         st = lora_train_status.get(lora_id, {
-#             "state": "unknown",
-#             "progress": 0,
-#             "message": "상태 정보 없음",
-#             "adapter_path": None,
-#         })
-
-#         cursor.execute("SELECT adapter_path FROM lora_profiles WHERE id=%s", (lora_id,))
-#         row = cursor.fetchone()
-#         adapter_path = row[0] if row else None
-
-#         return LoraStatusResponse(
-#             lora_id=lora_id,
-#             state=st["state"],
-#             progress=st["progress"],
-#             message=st["message"],
-#             adapter_path=adapter_path,
-#         )
-        
-#     finally:
-#         cursor.close()
-
-# @app.get("/admin/users")
-# def list_all_users():
-#     cursor = get_cursor()
-#     try:
-            
-#         cursor.execute("SELECT id, username FROM users")
-#         rows = cursor.fetchall()
-
-#         return {
-#             "users": [
-#                 {"id": r[0], "username": r[1]}
-#                 for r in rows
-#             ]
-#         }
-#     finally:
-#         cursor.close()
-    
-# @app.get("/lora/list")
-# def list_lora(project_id: int):
-#     cursor = get_cursor()
-#     try:
-#         cursor.execute("""
-#             SELECT id, name, description, status, adapter_path
-#             FROM lora_profiles
-#             WHERE project_id = %s
-#             ORDER BY id DESC
-#         """, (project_id,))
-
-#         rows = cursor.fetchall()
-
-#         return {
-#             "loras": [
-#                 {
-#                     "id": r[0],
-#                     "name": r[1],
-#                     "description": r[2],
-#                     "status": r[3],
-#                     "adapter_path": r[4],
-#                 }
-#                 for r in rows
-#             ]
-#         }
-#     finally:
-#         cursor.close()
-
-# @app.get("/lora/{lora_id}/dataset")
-# def preview_lora_dataset(lora_id: int, limit: int = 5):
-#     cursor = get_cursor()
-#     try:
-#         dataset_path = f"data/lora_{lora_id}.jsonl"
-
-#         if not os.path.exists(dataset_path):
-#             return {"ok": False, "message": "데이터셋 없음"}
-
-#         preview = []
-#         with open(dataset_path, "r", encoding="utf-8") as f:
-#             for i, line in enumerate(f):
-#                 if i >= limit:
-#                     break
-#                 preview.append(json.loads(line))
-
-#         total = sum(1 for _ in open(dataset_path, "r", encoding="utf-8"))
-
-#         return {
-#             "ok": True,
-#             "dataset_path": dataset_path,
-#             "total_samples": total,
-#             "preview": preview,
-#         }
-#     finally:
-#         cursor.close()
-# ##GPT API를 호출해서 LoRA 학습용 messages[] dataset을 만드는 코드
-# def generate_chat_dataset_from_purpose(purpose: str, num_samples: int = 30):
-#     prompt = f"""
-# 너는 LoRA 학습용 데이터셋 생성기다.
-
-# 다음은 사용자가 작성한 LoRA의 목적 설명이다:
-
-# [LoRA 목적 설명]
-# {purpose}
-
-# 이 목적을 충실하게 반영할 수 있는 최적의 학습 데이터셋을 생성해야 한다.
-
-# ========================================================
-# 1) 너의 작업(반드시 지켜야 함)
-
-# - 사용자가 작성한 목적 설명을 읽고, 그 목적이 어떤 범주에 해당하는지 스스로 판단한다.
-# - 예:
-#   - 영어 논문 번역 LoRA → 번역 중심 데이터셋
-#   - 용어 설명 LoRA → 개념 정의, 예시 설명 중심 데이터셋
-#   - 논문 요약 LoRA → 원문 → 요약 중심 데이터셋
-#   - 논문 Q&A LoRA → 질문 → 분석/해석 중심 데이터셋
-#   - 문서 기반 tutor LoRA → multi-turn 설명 중심 데이터셋
-#   - 그 외 → 목적에 맞게 구조를 설계
-
-# - 판단한 범주에 맞춰 학습 태스크를 자동 생성한다.
-# - 그리고 그 태스크에 가장 적합한 messages[] 형태의 학습 데이터를 생성한다.
-
-# ========================================================
-# 2) 출력 데이터 형식
-
-# 각 라인은 JSONL 형식이어야 하며 다음 구조를 따른다:
-
-# {{
-#   "messages": [
-#     {{ "role": "system", "content": "<목적을 반영한 assistant의 역할 정의>" }},
-#     {{ "role": "user", "content": "<사용자의 입력 예시>" }},
-#     {{ "role": "assistant", "content": "<사용자의 목적을 달성하는 이상적인 응답>" }}
-#   ]
-# }}
-
-# ========================================================
-# 3) 절대적으로 지켜야 할 규칙 (TemplateError 방지용 → 매우 중요)
-
-# ⚠️ messages 배열은 반드시 다음 규칙을 따라야 한다:
-
-# - system은 0~1회만 등장하며 반드시 맨 앞에 온다.
-# - 그 다음은 user → assistant → user → assistant … 순서로 번갈아야 한다.
-# - user가 연속으로 두 번 오면 안 된다.
-# - assistant가 연속으로 두 번 오면 안 된다.
-# - multi-turn을 사용할 때도 반드시 user/assistant 교대 규칙을 유지해야 한다.
-
-# 즉, 허용되는 패턴의 예:
-
-# - [system], user, assistant
-# - [system], user, assistant, user, assistant
-# - [system], user, assistant, user, assistant, user, assistant
-
-# 절대 허용되지 않는 패턴:
-
-# - user, user
-# - assistant, assistant
-# - assistant이 user보다 먼저 등장
-# - system이 중간에 등장하는 경우
-
-# ========================================================
-# 4) multi-turn 생성 규칙
-
-# 목적이 복잡한 경우 multi-turn을 포함해도 좋지만,
-# 항상 user → assistant → user → assistant 형태여야 한다.
-
-# 단일 턴도 가능하다.
-
-# ========================================================
-# 5) 출력 규칙
-
-# - 총 {num_samples}개의 JSON 오브젝트를 JSONL 형식으로 출력한다.
-# - 각 줄 하나당 하나의 JSON.
-# - 코드블록은 절대 사용하지 않는다.
-# - JSON 외의 텍스트는 포함하지 않는다.
-
-# ========================================================
-# 이제 위 모든 규칙을 지키며 JSONL 데이터셋을 생성하라.
-# """
-
-#     response = client.chat.completions.create(
-#         model="gpt-4o-mini",
-#         messages=[
-#             {"role": "system", "content": "너는 고품질 LoRA 학습 데이터셋을 자동 생성하는 AI이며, role 순서 규칙을 엄격히 준수해야 한다."},
-#             {"role": "user", "content": prompt}
-#         ]
+#     return LoraStatusResponse(
+#         lora_id=lora_id,
+#         state="disabled",
+#         progress=0,
+#         message="LoRA 기능이 비활성화된 배포 환경입니다.",
+#         adapter_path=None,
 #     )
 
-#     dataset_text = response.choices[0].message.content
-#     return dataset_text
+
+
+############################################################################
+
+# ============================================================
+# [] LoRA 관련 API (실제 구현)
+# ============================================================
+
+### 로라 생성 api
+class LoraCreateRequest(BaseModel):
+    project_id: int
+    name: str
+    description: str        # summary / translation / qa / custom
+    base_model: str     # mistral / llama 등
+
+def update_status(lora_id, state, progress, message, adapter_path=None):
+    # 기존 상태가 있으면 가져오고, 없으면 기본 상태로 초기화
+    prev = lora_train_status.get(lora_id, {
+        "state": "created",
+        "progress": 0,
+        "message": "",
+        "adapter_path": None,
+    })
+
+    # 업데이트
+    lora_train_status[lora_id] = {
+        "state": state,
+        "progress": progress,
+        "message": message,
+        "adapter_path": adapter_path or prev["adapter_path"]
+    }
+
+    # 터미널 디버그용
+    print(f"[DEBUG] LoRA {lora_id}] {state} | {progress}% | {message}")
+
+def upload_dataset_to_blob(local_file_path: str, blob_name: str):
+    """
+    로컬 JSONL 파일을 Azure Blob Storage로 업로드합니다.
+    """
+    try:
+        # 1. 인증 객체 생성 (App Service의 Managed Identity 사용)
+        credential = DefaultAzureCredential()
+        
+        # 2. 서비스 클라이언트 생성
+        AZURE_STORAGE_ACCOUNT_URL = os.getenv("AZURE_STORAGE_ACCOUNT_URL")
+        blob_service_client = BlobServiceClient(AZURE_STORAGE_ACCOUNT_URL, credential=credential)
+        
+        # 3. 컨테이너 지정 (Azure ML은 기본적으로 'azureml-blobstore-...' 컨테이너를 사용함)
+        # 직접 만든 컨테이너가 있다면 그 이름을 사용하세요.
+        container_name = "training-datasets" 
+        
+        # 컨테이너가 없으면 생성
+        container_client = blob_service_client.get_container_client(container_name)
+        if not container_client.exists():
+            container_client.create_container()
+
+        # 4. 파일 업로드
+        blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+        
+        with open(local_file_path, "rb") as data:
+            blob_client.upload_blob(data, overwrite=True)
+            
+        print(f"[DEBUG] 업로드 완료: {blob_name}")
+        return f"azureml://datastores/workspaceblobstore/paths/{blob_name}" # AI Foundry용 경로 반환
+
+    except Exception as e:
+        print(f"[ERROR] 업로드 실패: {e}")
+        raise e
+    
+@app.post("/lora/{lora_id}/train")
+def start_lora_train(lora_id: int):
+    cursor = get_cursor()
+    try:
+        # 1. DB에서 정보 조회
+        cursor.execute("SELECT base_model, name FROM lora_profiles WHERE id=%s", (lora_id,))
+        row = cursor.fetchone()
+        if not row: return {"ok": False, "message": "LoRA 정보 없음"}
+        base_model = row[0]
+
+        # 2. [중요] 데이터셋 업로드 로직 (Local -> Azure Storage)
+        # AI Foundry의 컴퓨팅은 서버의 /data 폴더를 볼 수 없습니다. 
+        # 따라서 파일을 스토리지에 업로드해야 합니다.
+        local_path = f"data/lora_{lora_id}.jsonl"
+        blob_path = f"training-datasets/lora_{lora_id}.jsonl"
+        
+        upload_dataset_to_blob(local_path, blob_path)
+        
+        # 3. Azure AI Foundry Job 정의
+        job = command(
+            code="./train_src",
+            command="python train_lora.py --data_path ${{inputs.data}} --base_model ${{inputs.model}} --output_dir ./outputs",
+            inputs={
+                # path는 실제 업로드된 스토리지 경로여야 합니다.
+                "data": Input(type=AssetTypes.URI_FILE, path=f"azureml://datastores/workspaceblobstore/paths/{blob_path}"),
+                "model": base_model
+            },
+            environment="AzureML-pytorch-2.0-ubuntu20.04-py38-cuda11.7-gpu@latest",
+            compute="gpu-cluster",
+            display_name=f"lora-train-{lora_id}"
+        )
+
+        # 4. Job 실행
+        returned_job = ml_client.jobs.create_or_update(job)
+        azure_job_id = returned_job.name
+        
+        # 5. [중요] DB에 Job ID 저장
+        # 전역 변수(lora_train_status) 대신 DB에 저장해야 서버가 꺼져도 상태를 추적합니다.
+        cursor.execute("""
+            UPDATE lora_profiles 
+            SET status='training', azure_job_id=%s 
+            WHERE id=%s
+        """, (azure_job_id, lora_id))
+        conn.commit()
+
+        return {
+            "ok": True, 
+            "azure_job_id": azure_job_id,
+            "job_url": returned_job.services['Studio'].endpoint
+        }
+    finally:
+        cursor.close()
+
+@app.get("/lora/{lora_id}/status")
+def get_lora_status(lora_id: int):
+    cursor = get_cursor()
+    try:
+        # 1. DB에서 azure_job_id 조회
+        cursor.execute("SELECT status, azure_job_id FROM lora_profiles WHERE id=%s", (lora_id,))
+        row = cursor.fetchone()
+        if not row or not row[1]: 
+            return {"state": "not_found", "progress": 0}
+
+        status, job_id = row
+        
+        # 2. Azure ML에서 상태 조회
+        job_info = ml_client.jobs.get(job_id)
+        azure_status = job_info.status # Running, Completed, Failed, Canceled
+        
+        # 3. 매핑 및 DB 업데이트 (선택 사항)
+        state_map = {
+            "Running": "running",
+            "Completed": "ready",
+            "Failed": "error",
+            "Queued": "preparing"
+        }
+        final_state = state_map.get(azure_status, "training")
+
+        return {
+            "lora_id": lora_id,
+            "state": final_state,
+            "azure_status": azure_status,
+            "message": f"Azure Job is {azure_status}"
+        }
+    finally:
+        cursor.close()
